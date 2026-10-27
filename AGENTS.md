@@ -76,3 +76,8 @@ should_notify = from_telegram OR (is_away AND (needs_human OR is_long_task OR is
 6. **Không bao giờ giữ vòng lặp chờ trong Hook (`Stop`)**:
    - Mọi Hook (`start`, `ask`, `stop`) phải thực thi xong và thoát ngay lập tức (`print("{}")`). Tuyệt đối không dùng vòng lặp chờ (`wait_for_ide_telegram_reply`) trong `Stop` hook vì sẽ làm treo Terminal chạy ngoài `tmux` và giữ trạng thái `Working` trên IDE.
    - Xem chi tiết luồng nghiệp vụ và lộ trình nâng cấp tại `FLOW_NGHIEP_VU_VA_KE_HOACH.md`.
+
+### 7. Cơ chế Xác nhận 2 lớp (Pre-execution Hook ACK — `v1.2.0`)
+- Khi gửi lệnh từ Telegram vào `tmux`, Daemon ghi `state/ack_pending_<safe_pane>.json` và tự động thoát `copy-mode` (`tmux copy-mode -q`).
+- Ngay khi AI nhận được prompt (trước khi thực thi), Hook `start` (`PreInvocation` / `UserPromptSubmit`) xóa `ack_pending` và gửi bản tin `✅ OK — Đã nhận lệnh tại cửa sổ <pane>` kèm tên công cụ và thư mục.
+- Nếu sau 5 giây Hook `start` không phản hồi (do gửi nhầm cửa sổ `tmux` hoặc con trỏ không ở ô nhập), Daemon gửi cảnh báo kèm màn hình hiện tại của `tmux`.

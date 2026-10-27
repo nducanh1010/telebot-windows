@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import re
 import json
 import time
 import shutil
@@ -9,7 +10,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -318,31 +319,132 @@ def capture_screen(pane):
     return "⚠️ Không thể chụp màn hình cửa sổ này (kiểm tra `/list`)."
 
 
+def format_pane_summary(pane_line):
+    parts = [p.strip() for p in pane_line.split(" | ")]
+    pid = parts[0] if parts else pane_line
+    cmd_name = parts[1] if len(parts) > 1 else ""
+    if re.match(r"^\d+\.\d+\.\d+$", cmd_name):
+        cmd_name = f"claude ({cmd_name})"
+    folder = os.path.basename(os.path.normpath(parts[2])) if len(parts) > 2 else ""
+    label = f"{cmd_name} • {folder}" if (cmd_name and folder) else (cmd_name or folder)
+    return pid, label
+
+
+def send_list_menu(token, chat_id, current_pane):
+    panes = list_targets()
+    if not panes:
+        tg_send(token, chat_id, "⚠️ Hiện không tìm thấy cửa sổ tmux nào đang chạy.")
+        return
+    lines = []
+    buttons = []
+    for p in panes[:8]:
+        pid, label = format_pane_summary(p)
+        marker = "🟢" if pid == current_pane else "⚪️"
+        lines.append(f"{marker} `{pid}` — `{label}`")
+        buttons.append([{"text": f"🎯 Chọn {pid} ({label})", "callback_data": f"use:{pid}"}])
+    buttons.append([
+        {"text": "🚶‍♂️ Chế độ Away", "callback_data": "mode:away"},
+        {"text": "💻 Chế độ Here", "callback_data": "mode:here"},
+    ])
+    body = "\n".join(lines)
+    tg_send(
+        token,
+        chat_id,
+        f"📋 *Danh sách cửa sổ AI (v{VERSION})*\n📡 {get_mode_status_text()}\n🎯 Đang chọn: `{current_pane}`\n\n{body}",
+        reply_markup={"inline_keyboard": buttons},
+    )
+
+
 def send_to_target(pane, text, mark_waiting=True, is_special_key=False):
     safe = sanitize_filename(pane)
     if mark_waiting:
+        now_ts = time.time()
         with open(os.path.join(STATE_DIR, f"waiting_{safe}.flag"), "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
+            f.write(str(now_ts))
         with open(FROM_TG_DISPATCH_FILE, "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
+            f.write(str(now_ts))
+        if not is_special_key:
+            ack_file = os.path.join(STATE_DIR, f"ack_pending_{safe}.json")
+            with open(ack_file, "w", encoding="utf-8") as f:
+                json.dump({"pane": pane, "text": text, "ts": now_ts}, f, ensure_ascii=False)
 
     if has_tmux():
+        # Tự động thoát copy-mode (nếu đang cuộn màn hình trong tmux) để con trỏ quay về ô nhập
+        run_tmux(["copy-mode", "-q", "-t", pane])
         if is_special_key:
             if text in ("y", "n"):
                 run_tmux(["send-keys", "-t", pane, "-l", text])
-                time.sleep(0.15)
+                time.sleep(0.2)
                 run_tmux(["send-keys", "-t", pane, "Enter"])
             else:
                 run_tmux(["send-keys", "-t", pane, text])
         else:
             clean = text.replace("\n", " ").strip()
             run_tmux(["send-keys", "-t", pane, "-l", clean])
-            time.sleep(0.15)
+            time.sleep(0.25)
             run_tmux(["send-keys", "-t", pane, "Enter"])
         return
 
     if IS_WINDOWS:
         send_to_windows_terminal(pane, text, is_special_key=is_special_key)
+
+
+def verify_ai_received_command(token, chat_id, pane, text):
+    """
+    Chờ Hook 'start' của AI xác nhận đã nhận lệnh trước khi thực thi.
+    - Nếu Hook nhận được lệnh: Hook tự gửi '✅ OK — Đã nhận lệnh tại cửa sổ [pane]' và xóa file ack_pending.
+    - Nếu sau 3s chưa thấy Hook phản hồi: Thử gửi bồi thêm 1 phím Enter (phòng TUI bị trễ khi paste).
+    - Nếu sau 5s vẫn không có phản hồi từ Hook: Báo cảnh báo ngay kèm màn hình hiện tại (do gửi nhầm tmux hoặc con trỏ không ở ô nhập).
+    """
+    safe = sanitize_filename(pane)
+    ack_file = os.path.join(STATE_DIR, f"ack_pending_{safe}.json")
+
+    for _ in range(12):  # 3.0 giây đầu
+        time.sleep(0.25)
+        if not os.path.exists(ack_file):
+            return True
+
+    # Thử gửi bồi 1 phím Enter nếu chữ đã vào ô nhập nhưng chưa submit
+    if has_tmux():
+        run_tmux(["send-keys", "-t", pane, "Enter"])
+
+    for _ in range(8):  # Thêm 2.0 giây (tổng 5.0 giây)
+        time.sleep(0.25)
+        if not os.path.exists(ack_file):
+            return True
+
+    # Quá 5 giây mà Hook start của AI không chạy -> Con trỏ không ở ô nhập hoặc nhầm cửa sổ tmux!
+    try:
+        os.remove(ack_file)
+    except OSError:
+        pass
+
+    scr = capture_screen(pane)
+    scr_lines = [line for line in scr.splitlines() if line.strip()]
+    scr_tail = "\n".join(scr_lines[-16:]) if scr_lines else "(Trống)"
+
+    warn_msg = (
+        f"⚠️ *CẢNH BÁO: AI tại `[{pane}]` CHƯA nhận được lệnh!*\n"
+        f"Đã gửi `{text[:80]}` vào `tmux` nhưng sau 5 giây Hook của AI không phản hồi.\n\n"
+        "👉 *Nguyên nhân có thể:*\n"
+        "1️⃣ Con trỏ trong `tmux` đang **không ở ô nhập** (đang mở hộp thoại, menu, hoặc AI đang bận chạy tác vụ khác).\n"
+        "2️⃣ Hoặc đang chọn **nhầm cửa sổ `tmux`**.\n\n"
+        f"📺 *Màn hình hiện tại của `[{pane}]`:*\n{scr_tail}"
+    )
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "⏎ Gửi thêm Enter", "callback_data": f"confirmkey:{pane}:Enter"},
+                {"text": "⏹ Gửi phím Esc", "callback_data": f"confirmkey:{pane}:Escape"},
+            ],
+            [
+                {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane}"},
+                {"text": "📋 Đổi cửa sổ khác", "callback_data": "list"},
+            ],
+        ]
+    }
+    tg_send(token, chat_id, warn_msg, reply_markup=reply_markup)
+    return False
 
 
 def ask_key_confirmation(token, chat_id, pane, key_code, key_label):
@@ -436,6 +538,10 @@ def main():
                         tg_api(token, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Đang chụp màn hình..."})
                         tg_send(token, chat_id, f"📺 *[{pane}]*:\n\n{scr}")
 
+                    elif data == "list":
+                        tg_api(token, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Danh sách cửa sổ"})
+                        send_list_menu(token, chat_id, get_active_pane())
+
                     elif data.startswith("use:"):
                         _, pane = data.split(":", 1)
                         set_active_pane(pane)
@@ -490,26 +596,7 @@ def main():
                     tg_send(token, chat_id, "💻 Đã chuyển về chế độ *Here (Ngồi máy)*.\nChỉ gửi Telegram khi bạn nhắn từ Telegram hoặc gõ kèm `tg` trên máy.")
 
                 elif cmd_word == "/list":
-                    panes = list_targets()
-                    if not panes:
-                        tg_send(token, chat_id, "⚠️ Hiện không tìm thấy cửa sổ tmux nào đang chạy.")
-                    else:
-                        body = "\n".join(f"• `{p}`" for p in panes)
-                        buttons = []
-                        for p in panes[:8]:
-                            pid = p.split(" | ")[0]
-                            cmd_name = p.split(" | ")[1] if " | " in p else ""
-                            buttons.append([{"text": f"🎯 Chọn {pid} ({cmd_name})", "callback_data": f"use:{pid}"}])
-                        buttons.append([
-                            {"text": "🚶‍♂️ Chế độ Away", "callback_data": "mode:away"},
-                            {"text": "💻 Chế độ Here", "callback_data": "mode:here"},
-                        ])
-                        tg_send(
-                            token,
-                            chat_id,
-                            f"📋 *Danh sách cửa sổ AI (v{VERSION})*\n📡 {get_mode_status_text()}\n🎯 Đang chọn: `{pane}`\n\n{body}",
-                            reply_markup={"inline_keyboard": buttons},
-                        )
+                    send_list_menu(token, chat_id, pane)
 
                 elif cmd_word == "/use" and len(text.split()) > 1:
                     target = text.split(None, 1)[1].strip()
@@ -537,16 +624,7 @@ def main():
 
                 else:
                     send_to_target(pane, text, mark_waiting=True, is_special_key=False)
-                    tg_send(
-                        token,
-                        chat_id,
-                        f"📨 Đã gửi vào `[{pane}]`. Đang chờ AI xử lý...",
-                        reply_markup={
-                            "inline_keyboard": [[
-                                {"text": "📸 Xem tiến độ màn hình", "callback_data": f"screen:{pane}"},
-                            ]]
-                        },
-                    )
+                    verify_ai_received_command(token, chat_id, pane, text)
 
         except Exception:
             time.sleep(2)

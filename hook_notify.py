@@ -11,7 +11,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -163,13 +163,40 @@ def split_message_chunks(text, max_len=3500):
     return chunks
 
 
+def get_context_meta(payload):
+    """Lấy tên công cụ AI (agy/claude/codex) và tên thư mục dự án của cửa sổ hiện tại."""
+    workspaces = payload.get("workspacePaths") or []
+    cwd = workspaces[0] if workspaces else (payload.get("cwd") or os.getcwd())
+    folder = os.path.basename(os.path.normpath(cwd)) or "workspace"
+    tpath = (payload.get("transcriptPath") or payload.get("transcript_path") or "").lower()
+    if payload.get("workspacePaths") or payload.get("transcriptPath") or "antigravity" in tpath:
+        tool = "agy"
+    elif ".codex" in tpath:
+        tool = "codex"
+    elif ".claude" in tpath:
+        tool = "claude"
+    else:
+        tool = "ai"
+    return tool, folder
+
+
 def build_inline_buttons(pane_id, mode="stop"):
     """
     P2: Hiển thị nút bấm theo đúng ngữ cảnh:
+    - mode == 'ack': Khi Hook xác nhận đã nhận lệnh từ Telegram trước khi thực thi.
     - mode == 'ask': Hiện đầy đủ Yes / No / Enter / Màn hình / Chọn cửa sổ khi AI thực sự hỏi xác nhận.
     - mode == 'stop': Chỉ hiện Xem màn hình & Chọn cửa sổ (không hiện Yes/No gây hiểu nhầm).
     """
     is_tmux_pane = not pane_id.startswith("term:")
+    if mode == "ack":
+        row = [
+            {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"},
+            {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
+        ]
+        if is_tmux_pane:
+            row.insert(1, {"text": "⏹ Hủy lệnh (Esc)", "callback_data": f"key:{pane_id}:Escape"})
+        return {"inline_keyboard": [row]}
+
     if mode == "ask":
         rows = [
             [
@@ -179,6 +206,7 @@ def build_inline_buttons(pane_id, mode="stop"):
             ],
             [
                 {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"},
+                {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
             ],
         ]
         if is_tmux_pane:
@@ -186,7 +214,10 @@ def build_inline_buttons(pane_id, mode="stop"):
         return {"inline_keyboard": rows}
 
     # mode == "stop"
-    row = [{"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"}]
+    row = [
+        {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"},
+        {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
+    ]
     if is_tmux_pane:
         row.insert(0, {"text": f"🎯 Chọn {pane_id}", "callback_data": f"use:{pane_id}"})
     return {"inline_keyboard": [row]}
@@ -362,10 +393,21 @@ def main():
 
     # 1. Sự kiện bắt đầu lượt chạy (PreInvocation / UserPromptSubmit)
     if event == "start":
-        with open(timer_file, "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
+        if not os.path.exists(timer_file):
+            with open(timer_file, "w", encoding="utf-8") as f:
+                f.write(str(time.time()))
 
-        dispatched_from_tg = False
+        ack_pending_file = os.path.join(STATE_DIR, f"ack_pending_{safe_pane}.json")
+        ack_data = None
+        if os.path.exists(ack_pending_file):
+            try:
+                with open(ack_pending_file, "r", encoding="utf-8") as f:
+                    ack_data = json.load(f)
+                os.remove(ack_pending_file)
+            except Exception:
+                ack_data = {}
+
+        dispatched_from_tg = ack_data is not None
         if os.path.exists(FROM_TG_DISPATCH_FILE):
             try:
                 with open(FROM_TG_DISPATCH_FILE, "r", encoding="utf-8") as f:
@@ -386,6 +428,25 @@ def main():
         if user_prompt_requests_telegram(user_input_payload):
             with open(prompt_tg_flag, "w", encoding="utf-8") as f:
                 f.write("1")
+
+        # Nếu nhận được lệnh từ Telegram, Hook trả lời ngay OK + tên cửa sổ trước khi AI thực thi
+        if ack_data is not None:
+            tool_name, folder_name = get_context_meta(payload)
+            cmd_preview = (
+                ack_data.get("text")
+                or extract_user_request_tag(user_input_payload)
+                or "(Lệnh điều khiển)"
+            ).strip()
+            if len(cmd_preview) > 200:
+                cmd_preview = cmd_preview[:200] + "..."
+            send_telegram(
+                f"✅ *OK — Đã nhận lệnh tại cửa sổ `{pane_id}`*\n"
+                f"📂 Ngữ cảnh: `{tool_name}` • `{folder_name}`\n"
+                f"📝 Nội dung: `{cmd_preview}`\n"
+                f"⏳ AI đang bắt đầu thực thi...",
+                pane_id,
+                mode="ack",
+            )
 
         print("{}")
         return
@@ -438,8 +499,10 @@ def main():
         except OSError:
             pass
 
+    ack_pending_file = os.path.join(STATE_DIR, f"ack_pending_{safe_pane}.json")
     from_telegram = os.path.exists(tg_flag_file) or explicit_tg_prompt
-    if os.path.exists(tg_flag_file):
+    # Không xóa waiting flag nếu đang có một lệnh mới vừa gửi từ Telegram đang chờ ACK (queued)
+    if os.path.exists(tg_flag_file) and not os.path.exists(ack_pending_file):
         try:
             os.remove(tg_flag_file)
         except OSError:
