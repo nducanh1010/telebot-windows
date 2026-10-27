@@ -331,12 +331,47 @@ def extract_reply_target_pane(msg):
     return ""
 
 
+def clean_tmux_screen(raw_text):
+    """Làm sạch các ký tự kẻ khung dài, khoảng trắng thừa và chi tiết TUI rườm rà khi chụp /screen gửi lên điện thoại."""
+    cleaned_lines = []
+    for line in raw_text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if re.match(r"^[─━═\-]{8,}$", s):
+            if cleaned_lines and cleaned_lines[-1] != "──────────":
+                cleaned_lines.append("──────────")
+            continue
+        if s in (">", "❯", "? for shortcuts") or s.startswith("└ Tip:"):
+            continue
+        # Rút gọn các vạch kẻ ngang dài bên trong dòng (ví dụ: '───── Conversation compacted ─────')
+        s = re.sub(r"[─━═]{5,}", "───", s)
+        # Bỏ '(ctrl+o to expand)'
+        s = re.sub(r"\s*\(ctrl\+o to expand\)", "", s)
+        # Rút gọn dòng Thought nội bộ của AI
+        s = re.sub(r"^(○ Thought for [\d.]+s)\s*\(.*\)$", r"\1", s)
+        # Rút gọn dòng log lệnh dài '● Ran (...)' / '● Scheduled 1 timer (...)'
+        s = re.sub(r"^(● (?:Ran|Running|Scheduled[^\(]*|Scheduling[^\(]*)\()(.{55}).*\)$", r"\1\2...)", s)
+        # Thu gọn khoảng trắng dài ở thanh status bar thành ' | '
+        s = re.sub(r"\s{4,}", " | ", s)
+        s = re.sub(r"^\? for shortcuts\s*\|\s*", "ℹ️ ", s)
+        cleaned_lines.append(s)
+
+    final_lines = []
+    for l in cleaned_lines:
+        if l == "──────────" and (not final_lines or final_lines[-1] == "──────────"):
+            continue
+        final_lines.append(l)
+    while final_lines and final_lines[-1] == "──────────":
+        final_lines.pop()
+    return "\n".join(final_lines[-35:]) or "(Màn hình trống)"
+
+
 def capture_screen(pane):
     if has_tmux() and not pane.startswith("term:"):
         code, out, _ = run_tmux(["capture-pane", "-t", pane, "-p"])
         if code == 0 and out.strip():
-            lines = [line for line in out.splitlines() if line.strip()]
-            return "\n".join(lines[-45:]) or "(Màn hình trống)"
+            return clean_tmux_screen(out)
 
     safe_pane = sanitize_filename(pane)
     for candidate in (

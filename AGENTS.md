@@ -109,3 +109,5 @@ should_notify = from_telegram OR (is_away AND (needs_human OR is_long_task OR is
   - `notify_on_screen_lock` (bool, mặc định `true`): Có tự động báo Telegram khi khóa màn hình vật lý PC hay không.
   - `notify_on_away` (bool, mặc định `true`): Có tự động báo Telegram khi bật `/away` hay không.
   - `suppress_when_tmux_active` (bool, mặc định `true`): Tự động tắt báo trùng lên Telegram cho phiên `tmux` đang có người gõ trực tiếp (SSH/Terminal) trong 5 phút qua.
+
+- `clean_tmux_screen(raw_text)` tự động cắt gọn các đường kẻ `────────` dài 200 ký tự, khoảng trắng thừa trên thanh status bar, `(ctrl+o to expand)` và nội dung `Thought` nội bộ để hiển thị gọn đẹp trên màn hình điện thoại.
