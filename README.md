@@ -13,6 +13,7 @@ Hệ thống chỉ gửi tin nhắn về Telegram khi rơi vào **1 trong 4 trư
 2. **AI cần con người can thiệp / chốt nghiệp vụ / chọn phương án thiết kế** (nhận diện qua nhãn `[TG_NOTIFY]`).
 3. **AI dừng để xin quyền chạy lệnh (Permission / Question)**.
 4. **Task chạy lâu ($\ge 180$ giây / 3 phút) đã hoàn thành** hoặc **gặp lỗi dừng bất thường**.
+   - 💡 *Muốn đổi thời gian này (ví dụ sang 60 giây hoặc 300 giây)*: Chỉ cần mở file **`config.json`** trong thư mục `ai-telegram` và sửa con số ở dòng `"min_duration_seconds": 180` (tính bằng giây). Lưu file lại là **có hiệu lực ngay lập tức ở lượt chạy kế tiếp**, không cần khởi động lại dịch vụ.
 
 *(Các câu chat ngắn dưới 3 phút khi bạn đang ngồi gõ trực tiếp trên máy tính mà không gắn `tg` sẽ không báo về điện thoại).*
 
