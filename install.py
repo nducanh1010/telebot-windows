@@ -63,7 +63,7 @@ def ensure_config():
     cfg = {
         "bot_token": token,
         "chat_id": chat_id,
-        "min_duration_seconds": 30,
+        "min_duration_seconds": 180,
     }
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)

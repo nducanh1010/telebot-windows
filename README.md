@@ -9,12 +9,12 @@ Bộ công cụ giúp kết nối các AI CLI (**Antigravity `agy`**, **Claude C
 ## 📋 Cơ chế thông báo thông minh (Không gây spam điện thoại)
 
 Hệ thống chỉ gửi tin nhắn về Telegram khi rơi vào **1 trong 4 trường hợp**:
-1. **Bạn chủ động nhắn hỏi AI từ Telegram** $\rightarrow$ AI xử lý xong sẽ trả lời lại qua Telegram.
-2. **AI cần con người can thiệp / chốt nghiệp vụ / chọn phương án thiết kế** (nhận diện qua nhãn `[TG_NOTIFY]` hoặc câu hỏi xác nhận).
+1. **Bạn chủ động nhắn hỏi AI từ Telegram** (hoặc khi bạn gõ trên Terminal nhưng thêm chữ `tg` ở đầu/cuối câu, ví dụ: `tg kiểm tra lỗi...`, `tg: chạy test...`, `... tg`, `... (tg)`) $\rightarrow$ AI xử lý xong sẽ trả lời lại qua Telegram.
+2. **AI cần con người can thiệp / chốt nghiệp vụ / chọn phương án thiết kế** (nhận diện qua nhãn `[TG_NOTIFY]`).
 3. **AI dừng để xin quyền chạy lệnh (Permission / Question)**.
-4. **Task chạy lâu ($\ge 30$ giây) đã hoàn thành** hoặc **gặp lỗi dừng bất thường**.
+4. **Task chạy lâu ($\ge 180$ giây / 3 phút) đã hoàn thành** hoặc **gặp lỗi dừng bất thường**.
 
-*(Các câu chat ngắn dưới 30 giây khi bạn đang ngồi gõ trực tiếp trên máy tính sẽ không báo về điện thoại).*
+*(Các câu chat ngắn dưới 3 phút khi bạn đang ngồi gõ trực tiếp trên máy tính mà không gắn `tg` sẽ không báo về điện thoại).*
 
 ---
 
@@ -95,7 +95,7 @@ Mỗi người nên tạo 1 con Bot riêng (hoàn toàn miễn phí) để nhậ
    {
      "bot_token": "8582278735:AAF66si-o6cNznXkJP5wexZ5YAzkB2srKrg",
      "chat_id": "754880858",
-     "min_duration_seconds": 30
+     "min_duration_seconds": 180
    }
    ```
    *(Hoặc nếu bạn chưa tạo `config.json`, khi chạy bộ cài ở bước dưới nó cũng sẽ tự động hỏi bạn 2 thông tin này và tạo `config.json` giúp bạn).*
