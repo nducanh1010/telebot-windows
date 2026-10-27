@@ -175,7 +175,6 @@ def update_codex_hooks():
         arr.append({
             "hooks": [{
                 "type": "command",
-                "name": label,
                 "statusMessage": label,
                 "command": cmd,
                 "timeout": timeout,

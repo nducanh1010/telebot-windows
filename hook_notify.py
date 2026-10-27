@@ -347,11 +347,15 @@ def wait_for_ide_telegram_reply(safe_pane, transcript_path, timeout_sec=580):
     chạm vào chuột hoặc bàn phím trên PC (HIDIdleTime < 0.8s)!
     """
     inbox_file = os.path.join(STATE_DIR, f"ide_inbox_{safe_pane}.txt")
+    listening_flag = os.path.join(STATE_DIR, f"ide_listening_{safe_pane}.flag")
     fallback_inboxes = [inbox_file]
+    extra_listening_flags = [listening_flag]
     if ".codex" in transcript_path.lower():
         fallback_inboxes.append(os.path.join(STATE_DIR, "ide_inbox_ide_codex-app.txt"))
+        extra_listening_flags.append(os.path.join(STATE_DIR, "ide_listening_ide_codex-app.flag"))
     elif ".claude" in transcript_path.lower():
         fallback_inboxes.append(os.path.join(STATE_DIR, "ide_inbox_ide_claude-app.txt"))
+        extra_listening_flags.append(os.path.join(STATE_DIR, "ide_listening_ide_claude-app.flag"))
     release_file = os.path.join(STATE_DIR, "ide_release.flag")
     tg_flag_file = os.path.join(STATE_DIR, f"waiting_{safe_pane}.flag")
 
@@ -361,36 +365,54 @@ def wait_for_ide_telegram_reply(safe_pane, transcript_path, timeout_sec=580):
         except OSError:
             pass
 
+    for lf in extra_listening_flags:
+        try:
+            with open(lf, "w", encoding="utf-8") as f:
+                f.write(str(time.time()))
+        except Exception:
+            pass
+
     start_wait = time.time()
     deadline = start_wait + timeout_sec
-    while time.time() < deadline:
-        # 1. Nếu bấm nút Nhả IDE hoặc /here trên Telegram
-        if os.path.exists(release_file):
-            try:
-                os.remove(release_file)
-            except OSError:
-                pass
-            break
-
-        # 2. Nếu có tin nhắn trả lời từ Telegram gửi vào hộp thư IDE
-        matched_inbox = next((p for p in fallback_inboxes if os.path.exists(p)), None)
-        if matched_inbox:
-            try:
-                with open(matched_inbox, "r", encoding="utf-8") as f:
-                    reply = f.read().strip()
-                os.remove(matched_inbox)
-                if reply:
-                    # Đánh dấu để lượt trả lời tiếp theo của IDE cũng tự động gửi về Telegram
-                    with open(tg_flag_file, "w", encoding="utf-8") as wf:
-                        wf.write(str(time.time()))
-                    is_claude_or_codex = ".claude" in transcript_path.lower() or ".codex" in transcript_path.lower()
-                    if is_claude_or_codex:
-                        return {"decision": "block", "reason": f"User replied via Telegram: {reply}"}
-                    return {"decision": "continue", "reason": f"User replied via Telegram: {reply}"}
-            except Exception:
+    decision_result = {}
+    try:
+        while time.time() < deadline:
+            # 1. Nếu bấm nút Nhả IDE hoặc /here trên Telegram
+            if os.path.exists(release_file):
+                try:
+                    os.remove(release_file)
+                except OSError:
+                    pass
                 break
-        time.sleep(0.5)
-    return {}
+
+            # 2. Nếu có tin nhắn trả lời từ Telegram gửi vào hộp thư IDE
+            matched_inbox = next((p for p in fallback_inboxes if os.path.exists(p)), None)
+            if matched_inbox:
+                try:
+                    with open(matched_inbox, "r", encoding="utf-8") as f:
+                        reply = f.read().strip()
+                    os.remove(matched_inbox)
+                    if reply:
+                        # Đánh dấu để lượt trả lời tiếp theo của IDE cũng tự động gửi về Telegram
+                        with open(tg_flag_file, "w", encoding="utf-8") as wf:
+                            wf.write(str(time.time()))
+                        is_claude_or_codex = ".claude" in transcript_path.lower() or ".codex" in transcript_path.lower()
+                        if is_claude_or_codex:
+                            decision_result = {"decision": "block", "reason": f"User replied via Telegram: {reply}"}
+                        else:
+                            decision_result = {"decision": "continue", "reason": f"User replied via Telegram: {reply}"}
+                        break
+                except Exception:
+                    break
+            time.sleep(0.5)
+    finally:
+        for lf in extra_listening_flags:
+            if os.path.exists(lf):
+                try:
+                    os.remove(lf)
+                except OSError:
+                    pass
+    return decision_result
 
 
 def main():
@@ -412,8 +434,14 @@ def main():
     transcript_path = payload.get("transcriptPath") or payload.get("transcript_path") or ""
     if transcript_path:
         try:
-            with open(os.path.join(STATE_DIR, "last_transcript.txt"), "w", encoding="utf-8") as f:
+            with open(os.path.join(STATE_DIR, f"last_transcript_{safe_pane}.txt"), "w", encoding="utf-8") as f:
                 f.write(transcript_path)
+            if ".codex" in transcript_path.lower():
+                with open(os.path.join(STATE_DIR, "last_transcript_ide_codex-app.txt"), "w", encoding="utf-8") as f:
+                    f.write(transcript_path)
+            elif ".claude" in transcript_path.lower():
+                with open(os.path.join(STATE_DIR, "last_transcript_ide_claude-app.txt"), "w", encoding="utf-8") as f:
+                    f.write(transcript_path)
         except Exception:
             pass
 

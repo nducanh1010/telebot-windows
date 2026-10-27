@@ -248,6 +248,26 @@ def get_mode_status_text():
     return "💻 Here (Đang ngồi máy - chỉ báo khi nhắn từ Telegram hoặc gõ kèm tg)"
 
 
+def find_latest_jsonl(base_folder):
+    base_folder = os.path.expanduser(base_folder)
+    if not os.path.isdir(base_folder):
+        return ""
+    newest_path = ""
+    newest_mtime = 0.0
+    for root, _, files in os.walk(base_folder):
+        for fn in files:
+            if fn.endswith(".jsonl"):
+                full = os.path.join(root, fn)
+                try:
+                    mt = os.path.getmtime(full)
+                    if mt > newest_mtime:
+                        newest_mtime = mt
+                        newest_path = full
+                except OSError:
+                    pass
+    return newest_path
+
+
 def capture_screen(pane):
     if has_tmux() and not pane.startswith("ide:"):
         code, out, err = run_tmux(["capture-pane", "-t", pane, "-p", "-S", "-40"])
@@ -255,18 +275,34 @@ def capture_screen(pane):
             return out.strip()[-3500:] or "(Màn hình trống)"
         return f"Không đọc được pane {pane}: {err}"
 
-    last_trans_file = os.path.join(STATE_DIR, "last_transcript.txt")
-    if os.path.exists(last_trans_file):
+    safe_pane = sanitize_filename(pane)
+    tpath = ""
+    specific_trans_file = os.path.join(STATE_DIR, f"last_transcript_{safe_pane}.txt")
+    if os.path.exists(specific_trans_file):
         try:
-            with open(last_trans_file, "r", encoding="utf-8") as f:
+            with open(specific_trans_file, "r", encoding="utf-8") as f:
                 tpath = f.read().strip()
-            from hook_notify import extract_last_response
-            ans = extract_last_response(tpath)
-            if ans:
-                return f"[Nội dung trả lời gần nhất]:\n\n{ans[-3400:]}"
         except Exception:
             pass
-    return "Chưa có dữ liệu màn hình cho cửa sổ này."
+
+    if not tpath:
+        if "codex" in pane.lower():
+            tpath = find_latest_jsonl("~/.codex/sessions")
+        elif "agy-ide" in pane.lower():
+            tpath = find_latest_jsonl("~/.gemini/antigravity/brain")
+        elif "claude" in pane.lower():
+            tpath = find_latest_jsonl("~/.claude/projects")
+
+    if tpath and os.path.exists(tpath):
+        try:
+            from hook_notify import extract_last_turn
+            last_u, last_a = extract_last_turn(tpath)
+            if last_a or last_u:
+                preview = f"👤 Câu hỏi gần nhất: {last_u[:400]}\n\n🤖 Trả lời:\n{last_a[-3000:]}"
+                return preview
+        except Exception:
+            pass
+    return f"Chưa có nội dung lịch sử cho cửa sổ `{pane}`."
 
 
 def send_to_target(pane, text, mark_waiting=True, is_special_key=False):
@@ -484,10 +520,24 @@ def main():
                     # Khi bạn chủ động nhắn câu hỏi từ Telegram -> Tự bật Away và gửi vào cửa sổ AI
                     set_away_mode(True)
                     send_to_target(pane, text, mark_waiting=True, is_special_key=False)
+                    if pane.startswith("ide:"):
+                        safe_pane = sanitize_filename(pane)
+                        is_listening = os.path.exists(os.path.join(STATE_DIR, f"ide_listening_{safe_pane}.flag"))
+                        if is_listening:
+                            status_note = f"📨 Đã gửi vào `{pane}`. IDE đang xử lý..."
+                        else:
+                            status_note = (
+                                f"📥 Đã lưu tin nhắn chờ cho `{pane}`.\n\n"
+                                "⚠️ *Lưu ý với ứng dụng GUI (IDE/App)*: Hiện cửa sổ này đang ở trạng thái nghỉ (chưa mở luồng Hook chờ). "
+                                "Để chat 2 chiều với App/IDE từ Telegram, trước khi rời máy bạn hãy gõ 1 câu có chữ `tg ...` trên App đó trước nhé!"
+                            )
+                    else:
+                        status_note = f"📨 Đã gửi vào `[{pane}]`. Đang chờ AI xử lý..."
+
                     tg_send(
                         token,
                         chat_id,
-                        f"📨 Đã gửi vào `[{pane}]`. Đang chờ AI xử lý...",
+                        status_note,
                         reply_markup={
                             "inline_keyboard": [[
                                 {"text": "📸 Xem tiến độ màn hình", "callback_data": f"screen:{pane}"},
