@@ -17,6 +17,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.path.join(BASE_DIR, "state")
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 ACTIVE_PANE_FILE = os.path.join(STATE_DIR, "active_pane.txt")
+AWAY_FLAG_FILE = os.path.join(STATE_DIR, "away_mode.flag")
+FROM_TG_DISPATCH_FILE = os.path.join(STATE_DIR, "from_tg_dispatch.flag")
+IDE_SESSIONS_FILE = os.path.join(STATE_DIR, "ide_sessions.json")
 
 os.makedirs(STATE_DIR, exist_ok=True)
 
@@ -51,9 +54,6 @@ def run_tmux(args):
         return 1, "", str(e)
 
 
-# ============================================================================
-# HỖ TRỢ WINDOWS 10/11 NATIVE (Khi không dùng tmux / WSL)
-# ============================================================================
 def list_windows_terminals():
     ps_script = (
         "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
@@ -80,10 +80,6 @@ def list_windows_terminals():
 
 
 def send_to_windows_terminal(pid_str, text, is_special_key=False):
-    """
-    Trên Windows 10/11 Native:
-    Kích hoạt cửa sổ Terminal theo PID (AppActivate) và dán nội dung Unicode qua Clipboard + Enter.
-    """
     key_map = {
         "Enter": "{ENTER}",
         "Escape": "{ESC}",
@@ -145,14 +141,32 @@ def tg_send(token, chat_id, text, reply_markup=None):
             continue
 
 
+def list_ide_targets():
+    if not os.path.exists(IDE_SESSIONS_FILE):
+        return []
+    out = []
+    try:
+        with open(IDE_SESSIONS_FILE, "r", encoding="utf-8") as f:
+            sessions = json.load(f)
+        for label, info in sessions.items():
+            # Chỉ hiện các phiên IDE hoạt động trong 24h qua
+            if time.time() - info.get("updated_at", 0) < 86400:
+                out.append(f"{label} | IDE | {info.get('cwd', '')}")
+    except Exception:
+        pass
+    return out
+
+
 def list_targets():
+    results = []
     if has_tmux():
         code, out, _ = run_tmux(["list-panes", "-a", "-F", "#S:#I.#P | #{pane_current_command} | #{pane_current_path}"])
         if code == 0 and out.strip():
-            return out.strip().splitlines()
-    if IS_WINDOWS:
-        return list_windows_terminals()
-    return []
+            results.extend(out.strip().splitlines())
+    elif IS_WINDOWS:
+        results.extend(list_windows_terminals())
+    results.extend(list_ide_targets())
+    return results
 
 
 def get_active_pane():
@@ -165,7 +179,7 @@ def get_active_pane():
             return saved
     for p in panes:
         parts = p.split(" | ")
-        if len(parts) >= 2 and any(ai in parts[1].lower() for ai in ("agy", "claude", "codex", "node", "windowsterminal")):
+        if len(parts) >= 2 and any(ai in parts[1].lower() for ai in ("agy", "claude", "codex", "node", "windowsterminal", "ide")):
             return parts[0]
     return available_ids[0] if available_ids else ("0" if IS_WINDOWS and not has_tmux() else "0:0.0")
 
@@ -175,14 +189,36 @@ def set_active_pane(pane):
         f.write(pane)
 
 
+def set_away_mode(enabled):
+    if enabled:
+        with open(AWAY_FLAG_FILE, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+    else:
+        if os.path.exists(AWAY_FLAG_FILE):
+            try:
+                os.remove(AWAY_FLAG_FILE)
+            except OSError:
+                pass
+        with open(os.path.join(STATE_DIR, "ide_release.flag"), "w", encoding="utf-8") as f:
+            f.write("1")
+
+
+def get_mode_status_text():
+    from hook_notify import is_screen_locked
+    if is_screen_locked():
+        return "🔒 Away (Màn hình PC đang khóa)"
+    if os.path.exists(AWAY_FLAG_FILE):
+        return "🚶 Away (Đang bật chế độ vắng mặt)"
+    return "💻 Here (Đang ngồi máy - chỉ báo khi nhắn từ Telegram hoặc gõ kèm tg)"
+
+
 def capture_screen(pane):
-    if has_tmux():
+    if has_tmux() and not pane.startswith("ide:"):
         code, out, err = run_tmux(["capture-pane", "-t", pane, "-p", "-S", "-40"])
         if code == 0:
             return out.strip()[-3500:] or "(Màn hình trống)"
         return f"Không đọc được pane {pane}: {err}"
 
-    # Fallback trên Windows Native: đọc câu trả lời gần nhất từ transcript
     last_trans_file = os.path.join(STATE_DIR, "last_transcript.txt")
     if os.path.exists(last_trans_file):
         try:
@@ -191,19 +227,31 @@ def capture_screen(pane):
             from hook_notify import extract_last_response
             ans = extract_last_response(tpath)
             if ans:
-                return f"[Nội dung phiên gần nhất]:\n\n{ans[-3400:]}"
+                return f"[Nội dung trả lời gần nhất]:\n\n{ans[-3400:]}"
         except Exception:
             pass
-    return "Trên Windows Native (không dùng tmux), nội dung sẽ được gửi tự động qua Hook hoặc bạn có thể xem danh sách cửa sổ bằng /list."
+    return "Chưa có dữ liệu màn hình cho cửa sổ này."
 
 
 def send_to_target(pane, text, mark_waiting=True, is_special_key=False):
+    now_str = str(time.time())
+    # Khi bạn chủ động nhắn từ Telegram -> Tự động đánh dấu lệnh từ Telegram
+    with open(FROM_TG_DISPATCH_FILE, "w", encoding="utf-8") as f:
+        f.write(now_str)
+
     if mark_waiting:
         safe_pane = sanitize_filename(pane)
         with open(os.path.join(STATE_DIR, f"waiting_{safe_pane}.flag"), "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
+            f.write(now_str)
         with open(os.path.join(STATE_DIR, "waiting_any.flag"), "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
+            f.write(now_str)
+
+    # Nếu mục tiêu là một phiên IDE đang chờ phản hồi qua Hook
+    if pane.startswith("ide:"):
+        safe_pane = sanitize_filename(pane)
+        with open(os.path.join(STATE_DIR, f"ide_inbox_{safe_pane}.txt"), "w", encoding="utf-8") as f:
+            f.write(text)
+        return
 
     if has_tmux():
         if is_special_key:
@@ -221,14 +269,16 @@ def send_to_target(pane, text, mark_waiting=True, is_special_key=False):
 
 def register_bot_menu(token):
     commands = [
-        {"command": "list", "description": "Danh sách cửa sổ AI & chọn cửa sổ điều khiển"},
-        {"command": "screen", "description": "Chụp màn hình terminal hiện tại"},
+        {"command": "list", "description": "Danh sách cửa sổ AI (tmux / IDE) & chọn cửa sổ"},
+        {"command": "screen", "description": "Chụp màn hình terminal / kết quả hiện tại"},
+        {"command": "away", "description": "Bật chế độ Vắng mặt (Nhận mọi thông báo quan trọng)"},
+        {"command": "here", "description": "Chuyển về chế độ Ngồi máy (Tắt báo tự động)"},
         {"command": "yes", "description": "Gửi phím y + Enter (Có xác nhận trước khi gửi)"},
         {"command": "no", "description": "Gửi phím n + Enter (Có xác nhận trước khi gửi)"},
         {"command": "enter", "description": "Gửi phím Enter (Có xác nhận trước khi gửi)"},
         {"command": "esc", "description": "Gửi phím Escape (Có xác nhận trước khi gửi)"},
         {"command": "ctrlc", "description": "Gửi Ctrl+C dừng lệnh (Có xác nhận trước khi gửi)"},
-        {"command": "help", "description": "Xem hướng dẫn sử dụng chi tiết"},
+        {"command": "help", "description": "Xem hướng dẫn & trạng thái hiện tại"},
     ]
     try:
         tg_api(token, "setMyCommands", {"commands": json.dumps(commands)})
@@ -323,21 +373,33 @@ def main():
                 pane = get_active_pane()
 
                 if cmd_word in ("/start", "/help"):
+                    mode_str = get_mode_status_text()
                     help_text = (
                         "🤖 *Điều khiển AI (agy / claude / codex) Đa Nền Tảng*\n\n"
-                        f"🖥 Cửa sổ đang chọn: `{pane}`\n\n"
+                        f"🖥 Cửa sổ đang chọn: `{pane}`\n"
+                        f"📡 Trạng thái: *{mode_str}*\n\n"
                         "• Nhắn tin bất kỳ: Gửi thẳng vào AI đang chạy và nhận câu trả lời qua Telegram.\n"
-                        "• `/list` : Xem danh sách cửa sổ (tmux hoặc Windows Terminal) & chọn nhanh.\n"
-                        "• `/use <id>` : Chuyển sang cửa sổ khác.\n"
-                        "• `/screen` hoặc `/status` : Xem màn hình hiện tại.\n"
-                        "• `/yes`, `/no`, `/enter`, `/esc`, `/ctrlc` : Gửi phím điều khiển (có hỏi xác nhận trước khi gửi)."
+                        "• `/list` : Xem danh sách cửa sổ (tmux / IDE) & chọn nhanh.\n"
+                        "• `/screen` : Xem màn hình terminal / câu trả lời hiện tại.\n"
+                        "• `/away` : Bật chế độ Vắng mặt (khi bạn quên Lock màn hình PC).\n"
+                        "• `/here` : Về chế độ Ngồi máy (khi gõ phím trên PC cũng tự động chuyển về `/here`).\n"
+                        "• `/yes`, `/no`, `/enter`, `/esc`, `/ctrlc` : Gửi phím điều khiển (có hỏi xác nhận)."
                     )
                     tg_send(token, chat_id, help_text)
 
+                elif cmd_word == "/away":
+                    set_away_mode(True)
+                    tg_send(token, chat_id, "🚶 Đã bật chế độ *Away (Vắng mặt)*. Mọi thông báo quan trọng từ PC sẽ được gửi về Telegram.\n*(Khi bạn ngồi gõ lại trên PC, chế độ này sẽ tự động tắt)*.")
+
+                elif cmd_word == "/here":
+                    set_away_mode(False)
+                    tg_send(token, chat_id, "💻 Đã chuyển về chế độ *Here (Ngồi máy)*. Điện thoại sẽ im lặng trừ khi bạn nhắn từ Telegram hoặc gõ kèm `tg`.")
+
                 elif cmd_word == "/list":
                     panes = list_targets()
+                    mode_str = get_mode_status_text()
                     if not panes:
-                        tg_send(token, chat_id, "⚠️ Hiện không tìm thấy cửa sổ tmux / Terminal nào đang chạy.")
+                        tg_send(token, chat_id, f"📡 {mode_str}\n⚠️ Hiện không tìm thấy cửa sổ tmux / IDE nào đang chạy.")
                     else:
                         body = "\n".join(f"• `{p}`" for p in panes)
                         buttons = []
@@ -348,7 +410,7 @@ def main():
                         tg_send(
                             token,
                             chat_id,
-                            f"📋 *Danh sách cửa sổ AI*\n(Đang chọn: `{pane}`):\n\n{body}",
+                            f"📋 *Danh sách cửa sổ AI*\n📡 {mode_str}\n🎯 Đang chọn: `{pane}`\n\n{body}",
                             reply_markup={"inline_keyboard": buttons},
                         )
 
@@ -377,6 +439,8 @@ def main():
                     ask_key_confirmation(token, chat_id, pane, "C-c", "Ctrl+C")
 
                 else:
+                    # Khi bạn chủ động nhắn câu hỏi từ Telegram -> Tự bật Away và gửi vào cửa sổ AI
+                    set_away_mode(True)
                     send_to_target(pane, text, mark_waiting=True, is_special_key=False)
                     tg_send(
                         token,

@@ -5,12 +5,14 @@ import re
 import json
 import time
 import shutil
+import plistlib
 import platform
 import subprocess
 import urllib.request
 import urllib.parse
 
 IS_WINDOWS = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
 
 if not IS_WINDOWS:
     os.environ["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", "")
@@ -18,6 +20,11 @@ if not IS_WINDOWS:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.path.join(BASE_DIR, "state")
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+AWAY_FLAG_FILE = os.path.join(STATE_DIR, "away_mode.flag")
+FROM_TG_DISPATCH_FILE = os.path.join(STATE_DIR, "from_tg_dispatch.flag")
+IDE_SESSIONS_FILE = os.path.join(STATE_DIR, "ide_sessions.json")
+
+NOTIFY_TAG = "[TG_" + "NOTIFY]"
 
 os.makedirs(STATE_DIR, exist_ok=True)
 
@@ -48,21 +55,109 @@ def load_config():
         return json.load(f)
 
 
+def is_screen_locked():
+    """Tự động phát hiện máy tính đang khóa màn hình (macOS / Windows / Ubuntu)."""
+    try:
+        if IS_MAC:
+            out = subprocess.check_output(
+                ["ioreg", "-n", "Root", "-d1", "-a"],
+                stdin=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+            data = plistlib.loads(out)
+            root = data if isinstance(data, dict) else (data[0] if data else {})
+            users = root.get("IOConsoleUsers", [])
+            if users and isinstance(users[0], dict):
+                return bool(users[0].get("CGSSessionScreenIsLocked", False))
+        elif IS_WINDOWS:
+            out = subprocess.check_output(
+                ["tasklist", "/FI", "IMAGENAME eq LogonUI.exe"],
+                stdin=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+            )
+            return "LogonUI.exe" in out
+        else:
+            # Ubuntu / Linux (systemd-logind)
+            user = os.environ.get("USER", "")
+            if user:
+                out = subprocess.check_output(
+                    ["loginctl", "list-sessions", "--no-legend"],
+                    stdin=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    timeout=2,
+                )
+                for line in out.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 3 and parts[2] == user:
+                        sid = parts[0]
+                        prop = subprocess.check_output(
+                            ["loginctl", "show-session", sid, "-p", "LockedHint"],
+                            stdin=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            text=True,
+                            timeout=2,
+                        )
+                        if "LockedHint=yes" in prop:
+                            return True
+    except Exception:
+        pass
+    return False
+
+
+def is_in_tmux_session():
+    return bool(os.environ.get("TMUX_PANE")) and has_tmux()
+
+
 def get_session_label(payload):
-    if has_tmux():
+    if is_in_tmux_session():
         pane = os.environ.get("TMUX_PANE", "")
-        if pane:
-            out = run_tmux(["display-message", "-t", pane, "-p", "#S:#I.#P"])
-            if out:
-                return out
-        out = run_tmux(["display-message", "-p", "#S:#I.#P"])
+        out = run_tmux(["display-message", "-t", pane, "-p", "#S:#I.#P"])
         if out:
             return out
-    # Fallback cho Windows Native hoặc khi chạy ngoài tmux
     workspaces = payload.get("workspacePaths") or []
     cwd = workspaces[0] if workspaces else os.getcwd()
-    folder = os.path.basename(os.path.normpath(cwd)) or "terminal"
-    return f"{platform.node()}:{folder}"
+    folder = os.path.basename(os.path.normpath(cwd)) or "workspace"
+    tpath = (payload.get("transcriptPath") or payload.get("transcript_path") or "").lower()
+    if "antigravity-ide" in tpath or ("antigravity" in tpath and "cli" not in tpath):
+        surface = "agy-ide"
+    elif ".claude" in tpath:
+        surface = "claude"
+    elif ".codex" in tpath:
+        surface = "codex"
+    else:
+        surface = "ide"
+    return f"ide:{surface}:{folder}"
+
+
+def register_ide_session(conv_id, label, payload):
+    if is_in_tmux_session():
+        return
+    sessions = {}
+    if os.path.exists(IDE_SESSIONS_FILE):
+        try:
+            with open(IDE_SESSIONS_FILE, "r", encoding="utf-8") as f:
+                sessions = json.load(f)
+        except Exception:
+            sessions = {}
+    workspaces = payload.get("workspacePaths") or []
+    cwd = workspaces[0] if workspaces else os.getcwd()
+    sessions[label] = {
+        "conv_id": conv_id,
+        "label": label,
+        "cwd": cwd,
+        "updated_at": time.time(),
+    }
+    # Giữ tối đa 10 phiên IDE gần nhất
+    sorted_items = sorted(sessions.items(), key=lambda x: x[1].get("updated_at", 0), reverse=True)[:10]
+    try:
+        with open(IDE_SESSIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(dict(sorted_items), f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def send_telegram(text, pane_id):
@@ -198,13 +293,48 @@ def user_prompt_requests_telegram(user_text):
 
 
 def looks_like_human_decision_needed(text):
-    return "[TG_NOTIFY]" in text
+    # Chỉ nhận diện khi nhãn nằm ở ngay đầu câu trả lời (tránh bắt nhầm khi thảo luận về nhãn ở giữa câu)
+    return text.lstrip().startswith(NOTIFY_TAG)
 
 
 def sanitize_filename(name):
     for ch in (":", ".", "/", "\\", " "):
         name = name.replace(ch, "_")
     return name
+
+
+def wait_for_ide_telegram_reply(safe_pane, transcript_path, timeout_sec=300):
+    """
+    Khi chạy trên IDE (ngoài tmux) ở chế độ Remote/Away, chờ phản hồi từ hộp thư IDE
+    nếu người dùng nhắn lại qua Telegram.
+    """
+    inbox_file = os.path.join(STATE_DIR, f"ide_inbox_{safe_pane}.txt")
+    release_file = os.path.join(STATE_DIR, "ide_release.flag")
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        # Nếu người dùng đã mở khóa màn hình và tắt away mode -> nhả IDE ngay
+        if not os.path.exists(AWAY_FLAG_FILE) and not is_screen_locked():
+            break
+        if os.path.exists(release_file):
+            try:
+                os.remove(release_file)
+            except OSError:
+                pass
+            break
+        if os.path.exists(inbox_file):
+            try:
+                with open(inbox_file, "r", encoding="utf-8") as f:
+                    reply = f.read().strip()
+                os.remove(inbox_file)
+                if reply:
+                    is_claude_or_codex = ".claude" in transcript_path.lower() or ".codex" in transcript_path.lower()
+                    if is_claude_or_codex:
+                        return {"decision": "block", "reason": f"User replied via Telegram: {reply}"}
+                    return {"decision": "continue", "reason": f"User replied via Telegram: {reply}"}
+            except Exception:
+                break
+        time.sleep(1.5)
+    return {}
 
 
 def main():
@@ -223,7 +353,6 @@ def main():
     tg_flag_file = os.path.join(STATE_DIR, f"waiting_{safe_pane}.flag")
     any_tg_flag_file = os.path.join(STATE_DIR, "waiting_any.flag")
 
-    # Lưu thông tin transcript mới nhất để trên Windows (không có tmux) vẫn xem được /screen
     transcript_path = payload.get("transcriptPath") or payload.get("transcript_path") or ""
     if transcript_path:
         try:
@@ -232,23 +361,49 @@ def main():
         except Exception:
             pass
 
+    register_ide_session(conv_id, pane_id, payload)
     user_input_payload = payload.get("lastUserInput") or payload.get("prompt") or ""
 
-    # 1. Ghi nhận thời điểm bắt đầu lượt chạy
+    # 1. Sự kiện bắt đầu lượt chạy (PreInvocation / UserPromptSubmit)
     if event == "start":
         with open(timer_file, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
+
+        # Kiểm tra xem lệnh này vừa được bắn từ Telegram hay do bạn gõ trực tiếp trên PC
+        dispatched_from_tg = False
+        if os.path.exists(FROM_TG_DISPATCH_FILE):
+            try:
+                with open(FROM_TG_DISPATCH_FILE, "r", encoding="utf-8") as f:
+                    ts = float(f.read().strip())
+                if time.time() - ts < 15.0:
+                    dispatched_from_tg = True
+                os.remove(FROM_TG_DISPATCH_FILE)
+            except Exception:
+                pass
+
+        if not dispatched_from_tg and not is_screen_locked():
+            # Bạn vừa gõ trực tiếp trên bàn phím PC -> Tự động tắt chế độ Away (về Here)!
+            if os.path.exists(AWAY_FLAG_FILE):
+                try:
+                    os.remove(AWAY_FLAG_FILE)
+                except OSError:
+                    pass
+
         if user_prompt_requests_telegram(user_input_payload):
             with open(prompt_tg_flag, "w", encoding="utf-8") as f:
                 f.write("1")
+
         print("{}")
         return
 
     # 2. Khi AI gọi tool hỏi user hoặc xin quyền (PreToolUse / Notification)
     if event == "ask":
-        tool_call = payload.get("toolCall", {})
-        msg = payload.get("message") or json.dumps(tool_call.get("args", {}), ensure_ascii=False, indent=2)
-        send_telegram(f"❓ *AI cần bạn xác nhận / trả lời:*\n{msg}", pane_id)
+        is_away = os.path.exists(AWAY_FLAG_FILE) or is_screen_locked()
+        from_tg = os.path.exists(tg_flag_file) or os.path.exists(any_tg_flag_file) or os.path.exists(prompt_tg_flag)
+        if is_away or from_tg:
+            tool_call = payload.get("toolCall", {})
+            msg = payload.get("message") or json.dumps(tool_call.get("args", {}), ensure_ascii=False, indent=2)
+            send_telegram(f"❓ *AI cần bạn xác nhận / trả lời:*\n{msg}", pane_id)
         print(json.dumps({"decision": "allow"}))
         return
 
@@ -283,11 +438,7 @@ def main():
             pass
 
     from_telegram = os.path.exists(tg_flag_file) or os.path.exists(any_tg_flag_file) or explicit_tg_prompt
-    needs_human = looks_like_human_decision_needed(last_msg)
-    is_error = term_reason in ("ERROR", "MAX_INVOCATIONS", "MAX_TOKEN_BUDGET_EXCEEDED")
-    is_long_task = duration >= cfg.get("min_duration_seconds", 180)
-
-    if from_telegram:
+    if os.path.exists(tg_flag_file) or os.path.exists(any_tg_flag_file):
         for fpath in (tg_flag_file, any_tg_flag_file):
             if os.path.exists(fpath):
                 try:
@@ -295,8 +446,19 @@ def main():
                 except OSError:
                     pass
 
-    if from_telegram or needs_human or is_error or is_long_task:
-        clean_msg = last_msg.replace("[TG_NOTIFY]", "").strip() or "(Đã hoàn thành thao tác)"
+    # Kiểm tra xem người dùng có đang vắng mặt (/away hoặc đã khóa màn hình PC) hay không
+    is_away = os.path.exists(AWAY_FLAG_FILE) or is_screen_locked()
+    needs_human = looks_like_human_decision_needed(last_msg)
+    is_error = term_reason in ("ERROR", "MAX_INVOCATIONS", "MAX_TOKEN_BUDGET_EXCEEDED")
+    is_long_task = duration >= cfg.get("min_duration_seconds", 180)
+
+    # QUY TẮC QUYẾT ĐỊNH GỬI TELEGRAM:
+    # - Nếu bạn đang ngồi trực tiếp trước PC (is_away == False): chỉ gửi khi bạn chủ động nhắn từ Telegram hoặc gõ kèm "tg".
+    # - Nếu bạn đang Vắng mặt / Khóa màn hình PC (is_away == True): gửi khi xong việc quan trọng (needs_human, is_long_task, is_error) hoặc từ Telegram.
+    should_notify = from_telegram or (is_away and (needs_human or is_error or is_long_task))
+
+    if should_notify:
+        clean_msg = last_msg.replace(NOTIFY_TAG, "").strip() or "(Đã hoàn thành thao tác)"
         if from_telegram:
             prefix = "💬 *Trả lời truy vấn của bạn:*"
         elif needs_human:
@@ -306,6 +468,12 @@ def main():
         else:
             prefix = f"✅ *Hoàn thành task ({int(duration)}s):*"
         send_telegram(f"{prefix}\n\n{clean_msg}", pane_id)
+
+        # Nếu đang chạy trên IDE (ngoài tmux) VÀ đang ở chế độ Away/Lock Screen, chờ phản hồi từ Telegram
+        if not is_in_tmux_session() and is_away:
+            out_decision = wait_for_ide_telegram_reply(safe_pane, transcript_path)
+            print(json.dumps(out_decision))
+            return
 
     print("{}")
 

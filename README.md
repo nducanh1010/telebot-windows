@@ -1,21 +1,32 @@
 # 🤖 AI Telegram Remote Bridge (`agy` / `claude` / `codex`)
 
-Bộ công cụ giúp kết nối các AI CLI (**Antigravity `agy`**, **Claude Code `claude`**, **OpenAI Codex `codex`**) với **Telegram** để:
-1. **Nhận thông báo tự động thông minh** trên điện thoại khi AI làm xong việc hoặc cần hỏi ý kiến.
+Bộ công cụ giúp kết nối các AI (**Antigravity `agy`**, **Claude Code `claude`**, **OpenAI Codex `codex`** — cả bản CLI và IDE) với **Telegram** để:
+1. **Nhận thông báo tự động thông minh** trên điện thoại khi bạn rời máy tính (khóa màn hình hoặc bật `/away`).
 2. **Chat & điều khiển AI 2 chiều** từ xa ngay trên Telegram (hỗ trợ **Windows 10/11**, **Ubuntu/Linux**, và **macOS**).
+
+*(Xem file [`AGENTS.md`](./AGENTS.md) nếu bạn cần tìm hiểu sâu về kiến trúc kỹ thuật hoặc dùng AI để chỉnh sửa thêm công cụ này).*
 
 ---
 
-## 📋 Cơ chế thông báo thông minh (Không gây spam điện thoại)
+## 📋 Cơ chế thông báo thông minh (Tự động phân biệt Ngồi máy vs Vắng mặt)
 
-Hệ thống chỉ gửi tin nhắn về Telegram khi rơi vào **1 trong 4 trường hợp**:
-1. **Bạn chủ động nhắn hỏi AI từ Telegram** (hoặc khi bạn gõ trên Terminal nhưng thêm chữ `tg` ở đầu/cuối câu, ví dụ: `tg kiểm tra lỗi...`, `tg: chạy test...`, `... tg`, `... (tg)`) $\rightarrow$ AI xử lý xong sẽ trả lời lại qua Telegram.
-2. **AI cần con người can thiệp / chốt nghiệp vụ / chọn phương án thiết kế** (nhận diện qua nhãn `[TG_NOTIFY]`).
-3. **AI dừng để xin quyền chạy lệnh (Permission / Question)**.
-4. **Task chạy lâu ($\ge 180$ giây / 3 phút) đã hoàn thành** hoặc **gặp lỗi dừng bất thường**.
-   - 💡 *Muốn đổi thời gian này (ví dụ sang 60 giây hoặc 300 giây)*: Chỉ cần mở file **`config.json`** trong thư mục `ai-telegram` và sửa con số ở dòng `"min_duration_seconds": 180` (tính bằng giây). Lưu file lại là **có hiệu lực ngay lập tức ở lượt chạy kế tiếp**, không cần khởi động lại dịch vụ.
+Hệ thống tự động nhận biết bạn đang ngồi làm việc trên PC hay đang ở xa để **không bao giờ làm phiền điện thoại thừa thãi**:
 
-*(Các câu chat ngắn dưới 3 phút khi bạn đang ngồi gõ trực tiếp trên máy tính mà không gắn `tg` sẽ không báo về điện thoại).*
+### 1. 💻 Khi bạn đang ngồi trước PC (Chế độ `Here` — Mặc định):
+- Mọi câu gõ trực tiếp trên PC sẽ chỉ trả lời trên màn hình PC, **điện thoại hoàn toàn im lặng**.
+- **Chỉ gửi về Telegram khi**:
+  - Bạn chủ động nhắn câu hỏi từ **Telegram**.
+  - Hoặc bạn gõ câu lệnh trên PC nhưng **thêm chữ `tg` ở đầu hoặc cuối câu** (ví dụ: `tg chạy test giúp mình`, `tg: kiểm tra lỗi...`, `... tg`, `... (tg)`) trước khi đứng dậy đi ra ngoài.
+
+### 2. 🔒 Khi bạn rời khỏi PC (Tự động bật `Away` khi Lock màn hình PC, hoặc bấm `/away` trên Telegram):
+- **Tự động phát hiện khóa màn hình**: Hễ bạn bấm khóa màn hình PC (`Ctrl + Cmd + Q` trên Mac / `Win + L` trên Windows), hệ thống tự biết bạn đã rời bàn làm việc mà không cần gõ `/away`.
+- **Nếu quên khóa màn hình PC**: Ra ngoài bạn chỉ cần mở Telegram bấm **`/away`** trong menu `[☰]` (hoặc nhắn bất kỳ câu gì vào Telegram) là chế độ `Away` được bật.
+- **Khi ở chế độ `Away`, AI sẽ tự động gửi thông báo về Telegram khi**:
+  1. AI cần con người chốt nghiệp vụ / phương án kiến trúc (qua nhãn `[TG_NOTIFY]`).
+  2. AI cần xin quyền xác nhận (`ask_question` / `Notification`).
+  3. Task chạy lâu ($\ge 180$ giây / 3 phút) đã hoàn thành hoặc dừng do lỗi.
+     - 💡 *Muốn đổi thời gian 180 giây này*: Chỉ cần mở file **`config.json`** trong thư mục `ai-telegram` và sửa con số ở dòng `"min_duration_seconds": 180` (tính bằng giây). Lưu file lại là **có hiệu lực ngay lập tức**, không cần sửa file Hook hay khởi động lại dịch vụ.
+- **Khi bạn quay lại ngồi gõ trên PC**: Ngay khi bạn gõ 1 câu lệnh bất kỳ trên bàn phím PC, hệ thống **tự động tắt `Away` (về `Here`)**, bạn không cần phải nhớ gõ `/here`!
 
 ---
 
@@ -63,7 +74,7 @@ Mỗi người nên tạo 1 con Bot riêng (hoàn toàn miễn phí) để nhậ
 #### 🪟 Nếu bạn dùng Windows 10 / 11:
 - Cần cài sẵn **Python 3** (nếu chưa có, mở PowerShell gõ: `winget install Python.Python.3.12` hoặc tải từ [python.org](https://www.python.org/downloads/) — nhớ tích chọn *"Add python.exe to PATH"* khi cài).
 - Bạn có thể dùng theo **1 trong 2 cách**:
-  - **Cách A (Windows Native)**: Chạy trực tiếp `agy`, `claude`, `codex` trên **Windows Terminal / PowerShell / CMD**.
+  - **Cách A (Windows Native)**: Chạy trực tiếp `agy`, `claude`, `codex` trên **Windows Terminal / PowerShell / CMD** hoặc **IDE**.
   - **Cách B (WSL2 Ubuntu)**: Nếu bạn chạy code trong WSL2, hãy làm theo hướng dẫn của Ubuntu bên dưới.
 
 #### 🐧 Nếu bạn dùng Ubuntu / Linux (hoặc WSL2 trên Windows):
@@ -107,11 +118,6 @@ Mỗi người nên tạo 1 con Bot riêng (hoàn toàn miễn phí) để nhậ
 - Mở thư mục `ai-telegram`, **nhấp đúp chuột vào file `install.bat`** (hoặc mở PowerShell/CMD tại thư mục đó và gõ `python install.py`).
 - Khi thấy thông báo `[OK] Đã gửi tin nhắn kiểm tra thành công tới Telegram!` là hoàn tất!
 
-> **Bộ cài đã tự động làm gì trên Windows?**
-> - Tự động gắn Hook vào `~/.gemini/config/hooks.json` (`agy`), `~/.claude/settings.json` (`claude`), và `~/.codex/hooks.json` (`codex`).
-> - Tự động thêm Rule `[TG_NOTIFY]` vào `GEMINI.md`, `CLAUDE.md`, `AGENTS.md`.
-> - Tự động tạo file khởi động ngầm `ai-telegram-daemon.vbs` (chạy qua `pythonw.exe` nên **không hiện cửa sổ CMD màu đen**) trong thư mục `Startup` của Windows để mỗi lần bật máy là tự chạy.
-
 #### 🐧 Trên Ubuntu / Linux và 🍎 macOS:
 - Mở Terminal tại thư mục `ai-telegram` và chạy:
   ```bash
@@ -120,53 +126,18 @@ Mỗi người nên tạo 1 con Bot riêng (hoàn toàn miễn phí) để nhậ
   ```
 - Kiểm tra điện thoại sẽ nhận được ngay tin nhắn chào mừng từ Bot!
 
-> **Bộ cài đã tự động làm gì trên Ubuntu / macOS?**
-> - Gắn đầy đủ Hook & Rule cho cả `agy`, `claude`, `codex`.
-> - **Trên macOS**: Tạo và kích hoạt `LaunchAgent` (`~/Library/LaunchAgents/com.thaipd.ai-telegram.plist`).
-> - **Trên Ubuntu**: Tạo và kích hoạt dịch vụ `systemd --user` (`~/.config/systemd/user/ai-telegram.service`) tự chạy ngầm khi bật máy.
-
 ---
 
 ## 📱 Bước 5: Cách sử dụng hàng ngày
 
-### 1. Mở AI trên máy tính:
-- **Trên macOS / Ubuntu / WSL2**: Hãy mở AI bên trong `tmux` để có trải nghiệm tốt nhất:
-  ```bash
-  tmux new -s work
-  # Sau đó gõ lệnh chạy AI như bình thường:
-  agy        # hoặc: claude / codex
-  ```
-- **Trên Windows 10/11 Native**: Mở **Windows Terminal** hoặc **PowerShell** và chạy `agy`, `claude`, hoặc `codex` như bình thường.
-
-*(Lưu ý: Nếu bạn đang mở sẵn cửa sổ `agy`/`claude`/`codex` từ trước khi chạy `install`, hãy tắt đi bật lại phiên AI đó 1 lần để nó nhận cấu hình Hook mới).*
-
-### 2. Điều khiển từ điện thoại (Telegram):
-Ở góc dưới bên trái khung chat với Bot sẽ có nút **Menu màu xanh `[☰]`**. Bấm vào đó sẽ có sẵn các lệnh (không cần tự gõ):
+Ở góc dưới bên trái khung chat với Bot trên Telegram có nút **Menu màu xanh `[☰]`**. Bấm vào đó sẽ có sẵn các lệnh:
 
 | Lệnh Menu | Chức năng |
 | :--- | :--- |
-| **`/list`** | Liệt kê tất cả cửa sổ `tmux` (hoặc cửa sổ `Windows Terminal`/`PowerShell` trên Windows) đang mở kèm nút bấm **`🎯 Chọn ...`** để chuyển cửa sổ cần điều khiển. |
-| **`/screen`** | Chụp nhanh màn hình terminal hiện tại của cửa sổ đang chọn gửi về điện thoại. |
-| **Nhắn chữ bất kỳ** | Gửi câu hỏi / yêu cầu đó thẳng vào cửa sổ AI đang chọn. Ngay khi AI trả lời xong sẽ tự động gửi câu trả lời về Telegram. |
-| **`/yes`** | Gửi phím `y + Enter` vào cửa sổ AI (có hiện bảng hỏi xác nhận trước khi gửi để tránh bấm nhầm). |
-| **`/no`** | Gửi phím `n + Enter` vào cửa sổ AI (có xác nhận). |
-| **`/enter`** | Gửi phím `Enter` (có xác nhận). |
-| **`/esc`** | Gửi phím `Escape` (có xác nhận). |
-| **`/ctrlc`** | Gửi tổ hợp `Ctrl+C` để dừng tác vụ đang chạy (có xác nhận). |
-| **`/help`** | Xem lại bảng hướng dẫn nhanh. |
-
----
-
-## 🛠 Xử lý sự cố thường gặp (Troubleshooting)
-
-1. **Cài xong nhưng không thấy tin nhắn chào mừng trên Telegram?**
-   - Kiểm tra xem bạn đã bấm nút **START** trong cuộc trò chuyện với con Bot của bạn chưa.
-   - Kiểm tra lại `bot_token` và `chat_id` trong file `config.json` đã chính xác chưa, sau đó chạy lại `install.bat` (Windows) hoặc `./install.sh` (Ubuntu/macOS).
-
-2. **Muốn đổi `bot_token`, `chat_id` hoặc thời gian báo cáo task dài (`min_duration_seconds`)?**
-   - Mở file `config.json`, sửa thông số (mặc định `"min_duration_seconds": 30`), rồi chạy lại `./install.sh` hoặc `install.bat` để khởi động lại dịch vụ chạy ngầm.
-
-3. **Lệnh kiểm tra dịch vụ chạy ngầm:**
-   - **macOS**: `ps aux | grep tg_bot_daemon`
-   - **Ubuntu**: `systemctl --user status ai-telegram.service`
-   - **Windows (PowerShell)**: `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*tg_bot_daemon.py*' }`
+| **`/list`** | Xem trạng thái (`Here` / `Away` / `Screen Locked`), liệt kê tất cả cửa sổ `tmux` / `IDE` / `Windows Terminal` đang mở kèm nút **`🎯 Chọn ...`**. |
+| **`/screen`** | Chụp nhanh màn hình terminal (hoặc nội dung trả lời mới nhất) gửi về điện thoại. |
+| **`/away`** | Chủ động bật chế độ Vắng mặt từ điện thoại (nếu lúc rời bàn bạn quên khóa màn hình PC). |
+| **`/here`** | Chuyển về chế độ Ngồi máy (hoặc chỉ cần gõ phím trực tiếp trên PC là tự động về `/here`). |
+| **Nhắn chữ bất kỳ** | Gửi câu hỏi / yêu cầu đó thẳng vào cửa sổ AI đang chọn và nhận câu trả lời qua Telegram. |
+| **`/yes`, `/no`, `/enter`, `/esc`, `/ctrlc`** | Gửi phím điều khiển vào cửa sổ AI (có hộp thoại xác nhận 2 bước để chống bấm nhầm). |
+| **`/help`** | Xem lại bảng hướng dẫn và trạng thái hiện tại. |
