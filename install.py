@@ -146,7 +146,9 @@ def update_claude_hooks():
 
     add_claude_hook("UserPromptSubmit", f"{HOOK_CMD_PREFIX} start", 15, "AI Telegram Bridge (Start)")
     add_claude_hook("Notification", f"{HOOK_CMD_PREFIX} ask", 15, "AI Telegram Bridge (Ask)")
+    add_claude_hook("PermissionRequest", f"{HOOK_CMD_PREFIX} ask", 15, "AI Telegram Bridge (PermissionRequest)")
     add_claude_hook("Stop", f"{HOOK_CMD_PREFIX} stop", 600, "AI Telegram Bridge (Stop)")
+    add_claude_hook("StopFailure", f"{HOOK_CMD_PREFIX} stop_failure", 30, "AI Telegram Bridge (StopFailure)")
 
     with open(settings_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)

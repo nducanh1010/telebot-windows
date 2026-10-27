@@ -1,5 +1,8 @@
 {
   "bot_token": "YOUR_BOT_TOKEN_HERE",
   "chat_id": "YOUR_CHAT_ID_HERE",
-  "min_duration_seconds": 180
+  "min_duration_seconds": 180,
+  "notify_on_screen_lock": true,
+  "notify_on_away": true,
+  "suppress_when_tmux_active": true
 }

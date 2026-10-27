@@ -141,3 +141,23 @@ Mỗi người nên tạo 1 con Bot riêng (hoàn toàn miễn phí) để nhậ
 | **Nhắn chữ bất kỳ** | Gửi câu hỏi / yêu cầu đó thẳng vào cửa sổ AI đang chọn và nhận câu trả lời qua Telegram. |
 | **`/yes`, `/no`, `/enter`, `/esc`, `/ctrlc`** | Gửi phím điều khiển vào cửa sổ AI (có hộp thoại xác nhận 2 bước để chống bấm nhầm). |
 | **`/help`** | Xem lại bảng hướng dẫn và trạng thái hiện tại. |
+
+---
+
+## 🚀 Các tính năng nổi bật (Cập nhật `v1.4.0`)
+
+1. **Xác nhận 2 lớp từ Hook (`Pre-execution ACK`)**:
+   - Khi nhắn tin từ Telegram vào `tmux`, chính Hook `start` của AI xác nhận `✅ OK — Đã nhận lệnh tại cửa sổ <pane>` trước khi thực thi.
+   - Tự động thoát `copy-mode` (`tmux copy-mode -q`) và cảnh báo sau 5 giây kèm ảnh chụp màn hình nếu con trỏ trong `tmux` không nằm ở ô nhập.
+2. **Khóa cố định cửa sổ đang chọn (`A`) & Hỗ trợ vuốt `Reply` sang cửa sổ `B`**:
+   - Cửa sổ đang chọn mặc định không bao giờ bị nhảy ngầm khi cửa sổ khác bắn thông báo chen ngang.
+   - Vuốt **Reply (Trả lời)** trực tiếp vào tin nhắn của cửa sổ nào trên Telegram sẽ gửi lệnh vào đúng cửa sổ đó.
+3. **Phân biệt thông minh `📋 Báo cáo tổng kết` và `🙋‍♂️ Cần chốt phương án`**:
+   - Chỉ hiển thị nút `Yes / No / Enter` khi AI thực sự đặt câu hỏi hoặc xin quyền.
+4. **Giám sát Hết Quota & Tự động báo khi Reset Quota chạy lại**:
+   - Tự động phát hiện `⚠ Usage limit reached` ở thanh trạng thái đáy `tmux` để cảnh báo ngay về Telegram kèm giờ reset, và báo tin vui `🟢 ĐÃ RESET QUOTA & CHẠY LẠI!` ngay khi đến giờ chạy tiếp.
+5. **Trạng thái sống trong `/list`**:
+   - Xem ngay cửa sổ nào đang `💤 Sẵn sàng`, `⚙️ Đang thực thi...`, `⏰ Đang hẹn giờ (Timer)`, hay `🚨 Hết quota (reset 11pm)`.
+6. **Bắt bảng hỏi (`1/2/3`, `y/n`) & Hàng đợi thông minh (`Smart Queue`)**:
+   - Tự phát hiện khi AI dừng ở bảng hỏi quyền/lựa chọn trên `tmux` để hiện nút bấm `[1️⃣ Chọn 1] [2️⃣ Chọn 2] [3️⃣ Chọn 3] [✅ Yes] [❌ No]`.
+   - Khi gửi lệnh mới lúc AI đang bận chạy lệnh trước, tự động xếp vào Hàng đợi (`Queue`) và chạy ngay khi lượt cũ hoàn tất (hoặc bấm nút ép chạy ngay / hủy lượt cũ).

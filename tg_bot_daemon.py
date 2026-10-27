@@ -10,7 +10,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -57,8 +57,22 @@ def run_tmux(args):
         return 1, "", str(e)
 
 
+def is_any_tmux_client_active(idle_threshold=300):
+    if not has_tmux():
+        return False
+    code_rc, out, _ = run_tmux(["list-clients", "-F", "#{client_activity}"])
+    if code_rc != 0 or not out.strip():
+        return False
+    now = time.time()
+    for line in out.splitlines():
+        line = line.strip()
+        if line.isdigit() and (now - int(line)) < idle_threshold:
+            return True
+    return False
+
+
 def is_screen_locked():
-    """Tự động phát hiện máy tính đang khóa màn hình."""
+    """Tự động phát hiện màn hình vật lý của máy tính đang khóa."""
     try:
         if IS_MAC:
             out = subprocess.check_output(
@@ -110,13 +124,22 @@ def is_screen_locked():
 
 
 def get_mode_status_text():
-    manual_away = os.path.exists(AWAY_FLAG_FILE)
-    locked = is_screen_locked()
-    if locked:
-        return "🔒 *Away (Máy tính đang khóa màn hình — tự động báo Telegram)*"
-    if manual_away:
-        return "🚶‍♂️ *Away (Đang bật chế độ vắng mặt — tự động báo Telegram)*"
-    return "💻 *Here (Đang ngồi máy — chỉ báo khi nhắn từ Telegram hoặc gõ kèm `tg`)*"
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    lock_cfg = "BẬT" if cfg.get("notify_on_screen_lock", True) else "TẮT"
+    away_cfg = "BẬT" if cfg.get("notify_on_away", True) else "TẮT"
+    ssh_suppress = "BẬT" if cfg.get("suppress_when_tmux_active", True) else "TẮT"
+    flags_line = f"⚙️ Cờ cấu hình: `lock={lock_cfg}` | `away={away_cfg}` | `ssh_quiet={ssh_suppress}`"
+
+    if cfg.get("suppress_when_tmux_active", True) and is_any_tmux_client_active():
+        return f"📱 *Here (Đang thao tác trực tiếp trên tmux/SSH — tắt báo trùng)*\n{flags_line}"
+    if cfg.get("notify_on_away", True) and os.path.exists(AWAY_FLAG_FILE):
+        return f"🚶‍♂️ *Away (Đang bật /away — tự động báo Telegram)*\n{flags_line}"
+    if cfg.get("notify_on_screen_lock", True) and is_screen_locked():
+        return f"🔒 *Away (Màn hình PC đang khóa — tự động báo Telegram)*\n{flags_line}"
+    return f"💻 *Here (Đang ngồi máy — chỉ báo khi nhắn từ Telegram hoặc gõ kèm `tg`)*\n{flags_line}"
 
 
 # ============================================================================
@@ -345,6 +368,123 @@ def format_pane_summary(pane_line):
     return pid, label
 
 
+
+INTERACTIVE_PROMPT_RE = re.compile(
+    r"(?:"
+    r"Do you want to (?:proceed|allow|make this edit|run this)"
+    r"|Allow (?:command|tool|mcp|execution)"
+    r"|\([yY]/[nN]\)|\[[yY]/[nN]\]"
+    r"|Enter to select.*(?:navigate|cancel)"
+    r"|Use arrow keys to navigate"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def detect_interactive_prompt(pid):
+    """
+    Kiểm tra xem cửa sổ tmux có đang dừng ở bảng hỏi lựa chọn (1/2/3, y/n, Permission prompt) hay không.
+    Trả về (is_prompt: bool, snippet: str).
+    """
+    if not has_tmux() or pid.startswith("term:"):
+        return False, ""
+    code_rc, out, _ = run_tmux(["capture-pane", "-t", pid, "-p"])
+    if code_rc != 0 or not out.strip():
+        return False, ""
+    non_empty = [l.rstrip() for l in out.splitlines() if l.strip()]
+    bottom_12 = non_empty[-12:]
+    bottom_text = "\n".join(bottom_12)
+
+    # Kiểm tra mẫu câu hỏi quyền hoặc menu chọn 1. / 2. đang mở ở đáy màn hình
+    has_menu_cursor = bool(
+        re.search(r"^\s*(?:❯|>|›)\s*1\.\s+", bottom_text, re.MULTILINE)
+        and re.search(r"^\s*2\.\s+", bottom_text, re.MULTILINE)
+    )
+    if has_menu_cursor or INTERACTIVE_PROMPT_RE.search(bottom_text):
+        return True, "\n".join(bottom_12[-10:])
+    return False, ""
+
+
+def increment_waiting_count(safe_pane, is_busy=False):
+    """Tăng bộ đếm số lượt đang chờ phản hồi Telegram trên cửa sổ này (để khi gửi lệnh nối tiếp vào queue không bị lượt trước xóa mất cờ)."""
+    wfile = os.path.join(STATE_DIR, f"waiting_{safe_pane}.flag")
+    count = 0
+    if os.path.exists(wfile):
+        try:
+            with open(wfile, "r", encoding="utf-8") as f:
+                val = f.read().strip()
+            count = int(val) if val.isdigit() else 1
+        except Exception:
+            count = 1
+    elif is_busy:
+        # Nếu lượt hiện tại khởi phát từ PC nhưng đang chạy dở và user gửi thêm lệnh từ Telegram vào queue
+        count = 1
+    count += 1
+    with open(wfile, "w", encoding="utf-8") as f:
+        f.write(str(count))
+
+
+def get_pane_live_status(pid):
+    """Đọc trạng thái thời gian thực của cửa sổ tmux (Sẵn sàng / Đang chạy / Hẹn giờ / Hết quota)."""
+    if not has_tmux() or pid.startswith("term:"):
+        return "💻 Terminal"
+    safe = sanitize_filename(pid)
+    alert_file = os.path.join(STATE_DIR, f"quota_alert_{safe}.json")
+    if os.path.exists(alert_file):
+        try:
+            with open(alert_file, "r", encoding="utf-8") as f:
+                d = json.load(f).get("detail", "")
+            m_reset = re.search(r"resets\s+([^\n·]+)", d, re.IGNORECASE)
+            if m_reset:
+                return f"🚨 Hết quota (reset {m_reset.group(1).strip()})"
+        except Exception:
+            pass
+        return "🚨 Hết quota"
+
+    code_rc, out, _ = run_tmux(["capture-pane", "-t", pid, "-p"])
+    if code_rc != 0 or not out.strip():
+        return "💤 Sẵn sàng"
+
+    non_empty = [l.rstrip() for l in out.splitlines() if l.strip()]
+    last_div_idx = -1
+    for i, line in enumerate(non_empty):
+        s = line.strip()
+        if s.startswith("────") and len(s) >= 15:
+            last_div_idx = i
+    footer = "\n".join(non_empty[last_div_idx + 1:] if last_div_idx != -1 else non_empty[-4:]).lower()
+    bottom_8 = "\n".join(non_empty[-8:]).lower()
+
+    if "usage limit reached" in footer:
+        return "🚨 Hết quota"
+    is_prompt, _ = detect_interactive_prompt(pid)
+    if is_prompt:
+        return "❓ Đang chờ chọn (1/2, y/n)"
+    if "timer running" in bottom_8:
+        return "⏰ Đang hẹn giờ (Timer)"
+    if "esc to cancel" in footer or "esc to interrupt" in footer:
+        return "⚙️ Đang thực thi..."
+    if "1 monitor" in footer or "monitors" in footer:
+        return "👀 Đang chạy Monitor"
+    return "💤 Sẵn sàng"
+
+
+def cleanup_orphan_state_files(max_age_seconds=43200):
+    """Tự động dọn các file start_*.txt và prompt_tg_*.flag mồ côi cũ quá 12 giờ."""
+    now = time.time()
+    try:
+        for fname in os.listdir(STATE_DIR):
+            if fname.startswith(("start_", "prompt_tg_", "ack_pending_")):
+                fpath = os.path.join(STATE_DIR, fname)
+                ageLimit = 300 if fname.startswith("ack_pending_") else max_age_seconds
+                if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > ageLimit:
+                    try:
+                        os.remove(fpath)
+                    except OSError:
+                        pass
+    except Exception:
+        pass
+
+
 def send_list_menu(token, chat_id, current_pane):
     panes = list_targets()
     if not panes:
@@ -354,8 +494,9 @@ def send_list_menu(token, chat_id, current_pane):
     buttons = []
     for p in panes[:8]:
         pid, label = format_pane_summary(p)
+        live_st = get_pane_live_status(pid)
         marker = "🟢" if pid == current_pane else "⚪️"
-        lines.append(f"{marker} `{pid}` — `{label}`")
+        lines.append(f"{marker} `{pid}` — `{label}`\n   └ {live_st}")
         buttons.append([{"text": f"🎯 Chọn {pid} ({label})", "callback_data": f"use:{pid}"}])
     buttons.append([
         {"text": "🚶‍♂️ Chế độ Away", "callback_data": "mode:away"},
@@ -374,11 +515,11 @@ def send_to_target(pane, text, mark_waiting=True, is_special_key=False):
     safe = sanitize_filename(pane)
     if mark_waiting:
         now_ts = time.time()
-        with open(os.path.join(STATE_DIR, f"waiting_{safe}.flag"), "w", encoding="utf-8") as f:
-            f.write(str(now_ts))
+        is_busy_now = get_pane_live_status(pane).startswith("⚙️ Đang thực thi")
+        increment_waiting_count(safe, is_busy=is_busy_now)
         with open(FROM_TG_DISPATCH_FILE, "w", encoding="utf-8") as f:
             f.write(str(now_ts))
-        if not is_special_key:
+        if not is_special_key and not is_busy_now:
             ack_file = os.path.join(STATE_DIR, f"ack_pending_{safe}.json")
             with open(ack_file, "w", encoding="utf-8") as f:
                 json.dump({"pane": pane, "text": text, "ts": now_ts}, f, ensure_ascii=False)
@@ -387,7 +528,7 @@ def send_to_target(pane, text, mark_waiting=True, is_special_key=False):
         # Tự động thoát copy-mode (nếu đang cuộn màn hình trong tmux) để con trỏ quay về ô nhập
         run_tmux(["copy-mode", "-q", "-t", pane])
         if is_special_key:
-            if text in ("y", "n"):
+            if text in ("y", "n", "1", "2", "3", "4"):
                 run_tmux(["send-keys", "-t", pane, "-l", text])
                 time.sleep(0.2)
                 run_tmux(["send-keys", "-t", pane, "Enter"])
@@ -402,6 +543,198 @@ def send_to_target(pane, text, mark_waiting=True, is_special_key=False):
 
     if IS_WINDOWS:
         send_to_windows_terminal(pane, text, is_special_key=is_special_key)
+
+
+
+QUOTA_LIMIT_RE = re.compile(
+    r"(?:"
+    r"⚠\s*Usage limit reached[^\n]*"
+    r"|Usage limit reached\s*·\s*limit resets[^\n]*"
+    r"|Claude(?:\s+AI)?\s+usage limit reached[^\n]*"
+    r"|You've hit your(?: usage)? limit[^\n]*"
+    r"|exceeded your current quota[^\n]*"
+    r"|Quota exceeded for quota metric[^\n]*"
+    r"|ResourceExhausted:.*quota[^\n]*"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def check_tmux_quota_limits(token, chat_id):
+    """
+    Quét định kỳ phần đáy của các cửa sổ tmux để:
+    1. Phát hiện ngay khi cửa sổ AI chạm giới hạn Quota (Usage limit reached) và báo về Telegram (1 lần duy nhất).
+    2. Phát hiện khi cửa sổ đó hết giới hạn (Quota reset) và tự động chạy lại để báo tin vui về Telegram.
+    """
+    if not has_tmux():
+        return
+    targets = list_targets()
+    active_default = get_active_pane()
+
+    for pane_line in targets:
+        pid, label = format_pane_summary(pane_line)
+        safe = sanitize_filename(pid)
+        alert_file = os.path.join(STATE_DIR, f"quota_alert_{safe}.json")
+
+        code_rc, out, _ = run_tmux(["capture-pane", "-t", pid, "-p"])
+        if code_rc != 0 or not out.strip():
+            continue
+
+        non_empty = [line.rstrip() for line in out.splitlines() if line.strip()]
+        # Chỉ lấy vùng thanh trạng thái (status footer) nằm BÊN DƯỚI đường kẻ ngang cuối cùng của ô nhập ('────────')
+        # để tuyệt đối không bắt nhầm nội dung tin nhắn chat của AI/User phía trên.
+        last_div_idx = -1
+        for i, line in enumerate(non_empty):
+            s = line.strip()
+            if s.startswith("────") and len(s) >= 15:
+                last_div_idx = i
+        raw_footer = non_empty[last_div_idx + 1:] if last_div_idx != -1 else non_empty[-4:]
+        tail_lines = [
+            l.strip() for l in raw_footer
+            if "`" not in l and not l.strip().startswith((">", "•", "-", "*"))
+        ]
+        tail_text = "\n".join(tail_lines)
+
+        m = QUOTA_LIMIT_RE.search(tail_text)
+        if m:
+            matched_line = m.group(0).strip()
+            detail_lines = [matched_line]
+            for idx, l in enumerate(tail_lines):
+                if matched_line in l and idx + 1 < len(tail_lines):
+                    next_l = tail_lines[idx + 1]
+                    if any(k in next_l.lower() for k in ("continuing", "reset", "upgrade", "wait", "cancel")):
+                        detail_lines.append(next_l)
+                    break
+            detail_str = "\n".join(detail_lines)
+
+            if not os.path.exists(alert_file):
+                try:
+                    with open(alert_file, "w", encoding="utf-8") as f:
+                        json.dump(
+                            {"pane": pid, "label": label, "detail": detail_str, "ts": time.time()},
+                            f,
+                            ensure_ascii=False,
+                        )
+                except Exception:
+                    pass
+
+                note = ""
+                if active_default and active_default != pid:
+                    note = f"\n\n📌 _Đang chọn mặc định: `{active_default}` — Hãy **Reply** tin nhắn này hoặc bấm **🎯 Chọn {pid}** nếu muốn thao tác với `{pid}`._"
+
+                msg = (
+                    f"🖥 *[{pid}]*\n\n"
+                    f"🚨 *CẢNH BÁO HẾT QUOTA / USAGE LIMIT!*\n"
+                    f"📂 Cửa sổ: `{pid}` (`{label}`)\n"
+                    f"⚠️ Trạng thái trên màn hình:\n`{detail_str}`\n\n"
+                    f"⏳ _Hệ thống sẽ tự động báo lại ngay khi cửa sổ `{pid}` được reset quota và chạy tiếp._"
+                    f"{note}"
+                )
+                buttons = [[
+                    {"text": f"🎯 Chọn {pid}", "callback_data": f"use:{pid}"},
+                    {"text": "📸 Xem màn hình", "callback_data": f"screen:{pid}"},
+                    {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
+                ]]
+                tg_send(token, chat_id, msg, reply_markup={"inline_keyboard": buttons})
+        else:
+            # Nếu trước đó đang bị đánh dấu hết quota mà nay dòng cảnh báo đã biến mất -> Đã reset quota & chạy lại!
+            if os.path.exists(alert_file):
+                prev_info = {}
+                try:
+                    with open(alert_file, "r", encoding="utf-8") as f:
+                        prev_info = json.load(f)
+                    os.remove(alert_file)
+                except Exception:
+                    pass
+
+                prev_detail = prev_info.get("detail", "Usage limit reached")
+                note = ""
+                if active_default and active_default != pid:
+                    note = f"\n\n📌 _Đang chọn mặc định: `{active_default}` — Hãy **Reply** tin nhắn này hoặc bấm **🎯 Chọn {pid}** nếu muốn thao tác với `{pid}`._"
+
+                msg = (
+                    f"🖥 *[{pid}]*\n\n"
+                    f"🟢 *ĐÃ RESET QUOTA & CHẠY LẠI!*\n"
+                    f"📂 Cửa sổ: `{pid}` (`{label}`)\n"
+                    f"✅ Trạng thái giới hạn trước đó (`{prev_detail.splitlines()[0]}`) đã kết thúc — AI tại cửa sổ này đã hoạt động trở lại!"
+                    f"{note}"
+                )
+                buttons = [[
+                    {"text": f"🎯 Chọn {pid}", "callback_data": f"use:{pid}"},
+                    {"text": "📸 Xem màn hình", "callback_data": f"screen:{pid}"},
+                    {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
+                ]]
+                tg_send(token, chat_id, msg, reply_markup={"inline_keyboard": buttons})
+
+
+
+def build_interactive_prompt_buttons(pid):
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "1️⃣ Chọn 1", "callback_data": f"confirmkey:{pid}:1"},
+                {"text": "2️⃣ Chọn 2", "callback_data": f"confirmkey:{pid}:2"},
+                {"text": "3️⃣ Chọn 3", "callback_data": f"confirmkey:{pid}:3"},
+            ],
+            [
+                {"text": "✅ Yes (y)", "callback_data": f"confirmkey:{pid}:y"},
+                {"text": "❌ No (n)", "callback_data": f"confirmkey:{pid}:n"},
+                {"text": "⏎ Enter", "callback_data": f"confirmkey:{pid}:Enter"},
+                {"text": "⏹ Esc", "callback_data": f"confirmkey:{pid}:Escape"},
+            ],
+            [
+                {"text": "📸 Xem màn hình", "callback_data": f"screen:{pid}"},
+                {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
+            ],
+        ]
+    }
+
+
+def check_tmux_prompts_and_queues(token, chat_id):
+    """
+    1. Phát hiện nếu cửa sổ tmux đang dừng ở bảng hỏi (1/2/3, y/n, Permission prompt) để báo về Telegram kèm nút chọn nhanh.
+    2. Tự động xả Hàng đợi (Queue) cho cửa sổ ngay khi cửa sổ chuyển sang trạng thái '💤 Sẵn sàng'.
+    """
+    if not has_tmux():
+        return
+    targets = list_targets()
+    active_default = get_active_pane()
+    is_away = os.path.exists(AWAY_FLAG_FILE) or is_screen_locked()
+
+    for pane_line in targets:
+        pid, label = format_pane_summary(pane_line)
+        safe = sanitize_filename(pid)
+        prompt_alert_file = os.path.join(STATE_DIR, f"prompt_alert_{safe}.json")
+        waiting_flag = os.path.join(STATE_DIR, f"waiting_{safe}.flag")
+
+        is_prompt, snippet = detect_interactive_prompt(pid)
+        if is_prompt:
+            if (is_away or os.path.exists(waiting_flag)) and not os.path.exists(prompt_alert_file):
+                try:
+                    with open(prompt_alert_file, "w", encoding="utf-8") as f:
+                        json.dump({"pane": pid, "snippet": snippet, "ts": time.time()}, f, ensure_ascii=False)
+                except Exception:
+                    pass
+                note = ""
+                if active_default and active_default != pid:
+                    note = f"\n\n📌 _Đang chọn mặc định: `{active_default}` — Bạn có thể bấm trực tiếp nút bên dưới hoặc **Reply** tin nhắn này._"
+                msg = (
+                    f"🖥 *[{pid}]*\n\n"
+                    f"❓ *AI ĐANG CHỜ BẠN CHỌN / XÁC NHẬN (`1/2/3` hoặc `y/n`)!*\n"
+                    f"📂 Cửa sổ: `{pid}` (`{label}`)\n\n"
+                    f"📺 *Nội dung hộp thoại:*\n{snippet}"
+                    f"{note}"
+                )
+                tg_send(token, chat_id, msg, reply_markup=build_interactive_prompt_buttons(pid))
+            continue
+        else:
+            if os.path.exists(prompt_alert_file):
+                try:
+                    os.remove(prompt_alert_file)
+                except OSError:
+                    pass
+
+
 
 
 def verify_ai_received_command(token, chat_id, pane, text):
@@ -496,7 +829,10 @@ def main():
 
     while True:
         try:
-            res = tg_api(token, "getUpdates", {"offset": offset, "timeout": 25})
+            cleanup_orphan_state_files()
+            check_tmux_quota_limits(token, chat_id)
+            check_tmux_prompts_and_queues(token, chat_id)
+            res = tg_api(token, "getUpdates", {"offset": offset, "timeout": 15})
             for item in res.get("result", []):
                 offset = item["update_id"] + 1
 
@@ -542,10 +878,12 @@ def main():
                     elif data.startswith("confirmkey:"):
                         _, rest = data.split(":", 1)
                         pane, k = rest.rsplit(":", 1)
-                        mark = k in ("y", "n")
+                        mark = k in ("y", "n", "1", "2", "3", "4", "Enter")
                         send_to_target(pane, k, mark_waiting=mark, is_special_key=True)
                         tg_api(token, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": f"Đã gửi {k} vào {pane}"})
-                        tg_send(token, chat_id, f"⚡️ Đã xác nhận và gửi `{k}` vào `[{pane}]`")
+                        tg_send(token, chat_id, f"✅ OK — Đã gửi lựa chọn `{k}` vào `[{pane}]`, AI đang tiếp tục thực thi!")
+
+
 
                     elif data.startswith("screen:"):
                         _, pane = data.split(":", 1)
@@ -648,6 +986,53 @@ def main():
                     ask_key_confirmation(token, chat_id, pane, "C-c", "Ctrl+C")
 
                 else:
+                    is_prompt, snippet = detect_interactive_prompt(pane)
+                    short_choice_map = {
+                        "1": "1", "2": "2", "3": "3", "4": "4",
+                        "y": "y", "yes": "y", "ok": "y",
+                        "n": "n", "no": "n",
+                    }
+                    # Case A: Màn hình đang ở bảng hỏi (1/2/3 hoặc y/n)
+                    if is_prompt:
+                        choice = short_choice_map.get(text.lower())
+                        if choice:
+                            send_to_target(pane, choice, mark_waiting=True, is_special_key=True)
+                            tg_send(
+                                token,
+                                chat_id,
+                                f"✅ *OK — Đã gửi lựa chọn `{choice}` vào bảng hỏi của `[{pane}]`!*\n⏳ AI đang tiếp tục thực thi...",
+                            )
+                        else:
+                            tg_send(
+                                token,
+                                chat_id,
+                                f"⚠️ *Cửa sổ `[{pane}]` đang dừng ở bảng hỏi lựa chọn (`1/2/3` hoặc `y/n`)!*\n"
+                                f"👉 Hãy chọn phương án bên dưới để giải quyết bảng hỏi trước khi nhập câu lệnh mới:\n\n"
+                                f"📺 *Hộp thoại hiện tại:*\n{snippet}",
+                                reply_markup=build_interactive_prompt_buttons(pane),
+                            )
+                        continue
+
+                    # Case B: Cửa sổ đang bận thực thi lệnh trước -> Bơm vào queue tự nhiên của AI và pong báo "đang chờ xử lý"
+                    live_st = get_pane_live_status(pane)
+                    if live_st.startswith("⚙️ Đang thực thi"):
+                        send_to_target(pane, text, mark_waiting=True, is_special_key=False)
+                        tg_send(
+                            token,
+                            chat_id,
+                            f"🖥 *[{pane}]*\n\n"
+                            f"⏳ *OK — Đã nhận lệnh tại `[{pane}]` (Lệnh này đang chờ xử lý)*\n"
+                            f"⚙️ AI hiện đang thực thi lệnh trước, lệnh mới của bạn (`{text[:150]}`) đã vào hàng đợi (queue) và sẽ tự động thực thi ngay khi lệnh hiện tại hoàn tất.",
+                            reply_markup={
+                                "inline_keyboard": [[
+                                    {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane}"},
+                                    {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
+                                ]]
+                            },
+                        )
+                        continue
+
+                    # Case C: Cửa sổ đang sẵn sàng nhận lệnh
                     send_to_target(pane, text, mark_waiting=True, is_special_key=False)
                     verify_ai_received_command(token, chat_id, pane, text)
 

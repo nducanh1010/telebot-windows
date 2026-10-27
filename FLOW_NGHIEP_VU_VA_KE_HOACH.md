@@ -1,10 +1,10 @@
-# Tài liệu Luồng Nghiệp Vụ & Kế Hoạch Nâng Cấp (`ai-telegram` — `v1.3.0`)
+# Tài liệu Luồng Nghiệp Vụ & Kế Hoạch Nâng Cấp (`ai-telegram` — `v1.4.0`)
 
-Tài liệu này tổng hợp **luồng nghiệp vụ chuẩn (Core Business Flows)** đã được triển khai thực tế tới phiên bản **`v1.3.0`** và **lộ trình các hạng mục nâng cấp** cho hệ thống cầu nối điều khiển AI qua Telegram (`agy`, `claude`, `codex`).
+Tài liệu này tổng hợp **luồng nghiệp vụ chuẩn (Core Business Flows)** đã được triển khai thực tế tới phiên bản **`v1.4.0`** và **lộ trình các hạng mục nâng cấp** cho hệ thống cầu nối điều khiển AI qua Telegram (`agy`, `claude`, `codex`).
 
 ---
 
-## Phần 1: Luồng Nghiệp Vụ Chuẩn (Core Business Flows — `v1.3.0`)
+## Phần 1: Luồng Nghiệp Vụ Chuẩn (Core Business Flows — `v1.4.0`)
 
 ### 1. Nguyên tắc cốt lõi
 1. **Không giữ Hook chặn (Non-blocking Hooks)**: Mọi Hook (`start`, `ask`, `stop`) chỉ ghi nhận trạng thái và bắn thông báo HTTP sang Telegram rồi thoát ngay lập tức (`print("{}")`). Tuyệt đối không giữ vòng lặp chờ trong Hook để không bao giờ làm treo Terminal hay IDE.
@@ -22,9 +22,33 @@ Tài liệu này tổng hợp **luồng nghiệp vụ chuẩn (Core Business Flo
    - Khi AI gắn nhãn thông báo ở đầu câu để báo cáo hoàn thành cột mốc (không có câu hỏi xin ý kiến ở cuối bài), hệ thống hiển thị **`📋 Báo cáo tổng kết (<thời_gian>s):`** và chỉ hiện nút `[🎯 Chọn cửa sổ]`, `[📸 Xem màn hình]` (không hiện nút `Yes / No`).
    - Chỉ khi AI thực sự đặt câu hỏi hoặc yêu cầu chọn phương án ở đoạn kết (`is_really_asking_decision`), hệ thống mới hiển thị **`🙋‍♂️ Cần chốt phương án / nghiệp vụ:`** kèm các nút `[✅ Yes (y)] [❌ No (n)] [⏎ Enter]`.
 
+5. **Giám sát Hết Quota & Tự động báo khi Reset Quota (`check_tmux_quota_limits`)**:
+   - Daemon quét định kỳ (mỗi 15s) vùng thanh trạng thái (status footer bên dưới vạch kẻ ô nhập `────────`) của các cửa sổ `tmux`.
+   - Khi phát hiện biểu ngữ chạm trần (`⚠ Usage limit reached`, `You've hit your limit`, `exceeded your current quota`, `Quota exceeded`), hệ thống gửi ngay cảnh báo `🚨 CẢNH BÁO HẾT QUOTA / USAGE LIMIT!` kèm giờ reset (ví dụ `limit resets 11pm`) và lưu cờ `state/quota_alert_<pane>.json` để chỉ báo 1 lần duy nhất.
+   - Ngay khi đến giờ reset và dòng cảnh báo biến mất (AI tự động chạy tiếp), hệ thống xóa cờ và bắn thông báo `🟢 ĐÃ RESET QUOTA & CHẠY LẠI!` về Telegram.
+
+6. **Hiển thị trạng thái thời gian thực trong `/list` & Tự động dọn rác `state/` (`v1.4.0`)**:
+   - Lệnh `/list` hiển thị trực tiếp trạng thái sống của từng cửa sổ `tmux`: `💤 Sẵn sàng`, `⚙️ Đang thực thi...`, `⏰ Đang hẹn giờ (Timer)`, `👀 Đang chạy Monitor`, hoặc `🚨 Hết quota (reset ...)`.
+   - Tự động dọn dẹp các file `start_*.txt` / `prompt_tg_*.flag` mồ côi quá 12 giờ trong `state/`.
+
+7. **Xử lý Bảng hỏi lựa chọn (`1/2/3`, `y/n`) & Hàng đợi thông minh (`Smart Queue` — `v1.4.0`)**:
+   - **Tự động phát hiện bảng hỏi**: Khi màn hình `tmux` dừng ở hộp thoại chọn phương án (`Do you want to proceed?`, `(y/n)`, menu `❯ 1. / 2.`), Daemon tự chụp hộp thoại gửi về Telegram kèm bộ nút 1 chạm (`[1️⃣ Chọn 1]`, `[2️⃣ Chọn 2]`, `[3️⃣ Chọn 3]`, `[✅ Yes]`, `[❌ No]`, `[⏎ Enter]`, `[⏹ Esc]`).
+   - **Gửi lựa chọn vào bảng hỏi**: Khi người dùng nhắn `1`, `2`, `3`, `y`, `n` lúc đang ở bảng hỏi, Daemon gửi thẳng phím lựa chọn và báo `✅ OK — Đã gửi lựa chọn vào bảng hỏi` (không chờ Hook `start`). Nếu người dùng nhắn câu văn bản dài lúc đang kẹt ở bảng hỏi, Daemon giữ câu đó vào Hàng đợi để không bị trôi chữ và nhắc chọn `1/2/y/n` trước.
+   - **Khi gửi lệnh mới lúc AI đang bận thực thi (`⚙️ Đang thực thi...`)**: Daemon bơm trực tiếp vào hàng đợi tự nhiên (native queue) của `tmux`/AI, tăng bộ đếm `waiting_<pane>.flag`, và phản hồi (pong) ngay lập tức: `⏳ OK — Đã nhận lệnh tại [<pane>] (Lệnh này đang chờ xử lý do AI đang thực thi lệnh trước)`.
+
+8. **Nhận diện thông minh khi chat trực tiếp qua `tmux` / SSH (`is_tmux_session_actively_watched` — `v1.4.0`)**:
+   - Trên macOS, khi khóa màn hình vật lý của máy (`CGSSessionScreenIsLocked = True`) nhưng người dùng vẫn kết nối từ xa (SSH / iPad / laptop khác) để gõ trực tiếp trong `tmux`, hệ thống kiểm tra `#{client_activity}` của phiên `tmux` đó.
+   - Nếu phiên `tmux` có thao tác bàn phím thực tế trong vòng 5 phút qua (hoặc câu lệnh vừa được gõ trực tiếp trên `tmux` chứ không phải từ Telegram), cửa sổ đó được nhận diện là **Here (`Đang ngồi máy`)** và tự xóa `away_mode.flag` — tuyệt đối **không** bắn ngược câu trả lời lên Telegram gây thừa thãi (trừ khi gõ kèm chữ `tg`).
+   - Trong khi đó, các phiên `tmux` khác chạy ngầm không có người gõ (`client_activity >= 5 phút`) vẫn tự động báo kết quả về Telegram khi hoàn thành cột mốc!
+
+   - **3 Cờ cấu hình chủ động trong `config.json`**:
+     - `"notify_on_screen_lock": true` — Bật/tắt tự động gửi Telegram khi màn hình vật lý PC bị khóa.
+     - `"notify_on_away": true` — Bật/tắt tự động gửi Telegram khi đang ở chế độ `/away`.
+     - `"suppress_when_tmux_active": true` — Khi đang gõ trực tiếp trên phiên `tmux` (ví dụ SSH qua điện thoại), tự động tắt gửi trùng lên Telegram cho cửa sổ đang gõ.
+
 ---
 
-### 2. Sơ đồ Luồng Nghiệp Vụ (`v1.3.0`)
+### 2. Sơ đồ Luồng Nghiệp Vụ (`v1.4.0`)
 
 ```mermaid
 flowchart TD
@@ -79,5 +103,7 @@ hoặc gõ kèm 'tg'?"}
 | **P2** | Nút bấm thông minh theo ngữ cảnh (`ask` hiện `Yes/No`, `stop` ẩn `Yes/No`) | `v1.1.0` | ✅ Đã hoàn thành |
 | **P3** | Chia nhỏ tin nhắn dài thông minh theo dòng (giữ trọn phần đầu & phần kết luận cuối) | `v1.1.0` | ✅ Đã hoàn thành |
 | **ACK** | Xác nhận 2 lớp từ Hook `start` (`✅ OK — Đã nhận lệnh`) + Cảnh báo 5s khi lệch con trỏ | `v1.2.0` | ✅ Đã hoàn thành |
-| **Routing & Report** | Khóa cố định cửa sổ `A` + Hỗ trợ vuốt `Reply` vào cửa sổ `B` + Tách `📋 Báo cáo tổng kết` khỏi `🙋‍♂️ Cần chốt phương án` | `v1.3.0` | ✅ Đã hoàn thành |
+| **Routing & Report** | Khóa cố định cửa sổ `A` + Hỗ trợ vuốt `Reply` vào cửa sổ `B` + Tách `📋 Báo cáo tổng kết` khỏi `🙋‍♂️ Cần chốt phương án` | `v1.4.0` | ✅ Đã hoàn thành |
+| **Quota Monitor** | Phát hiện `Usage limit reached` trên `tmux` + Báo ngay khi hết Quota & khi Reset Quota chạy lại | `v1.4.0` | ✅ Đã hoàn thành |
+| **Interactive Prompt & Smart Queue** | Tự động bắt bảng hỏi (`1/2/3`, `y/n`), Hàng đợi thông minh khi AI đang bận (`queue_<pane>.json`), Trạng thái sống trong `/list` & Dọn rác `state/` | `v1.4.0` | ✅ Đã hoàn thành |
 | **P4** | *(Tùy chọn)* Module AppleScript độc lập cho Desktop GUI (`ChatGPT.app`, `Claude.app`) | Tương lai | ⏸ Chưa cần thiết (ưu tiên dùng `tmux`) |

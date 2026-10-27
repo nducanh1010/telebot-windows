@@ -87,3 +87,25 @@ should_notify = from_telegram OR (is_away AND (needs_human OR is_long_task OR is
 - **Hỗ trợ vuốt `Reply` trên Telegram**: `extract_reply_target_pane(msg)` trong `tg_bot_daemon.py` tự nhận diện tiêu đề `🖥 [B]` hoặc `📺 [B]` của tin nhắn được Reply để định tuyến riêng câu trả lời đó vào `B`.
 - **Tách biệt `📋 Báo cáo tổng kết` và `🙋‍♂️ Cần chốt phương án / nghiệp vụ`**: `is_really_asking_decision()` kiểm tra đoạn kết của tin nhắn có câu hỏi cần người dùng quyết định hay chỉ là báo cáo hoàn thành cột mốc.
 - **Quy tắc bắt buộc khi sửa đổi**: Mỗi lần thay đổi nghiệp vụ, **bắt buộc phải cập nhật đồng bộ file `FLOW_NGHIEP_VU_VA_KE_HOACH.md` và `AGENTS.md`**.
+
+### 9. Giám sát Hết Quota & Báo khi Quota Reset chạy lại (`check_tmux_quota_limits`)
+- `tg_bot_daemon.py` quét định kỳ vùng thanh trạng thái (status footer bên dưới vạch kẻ ô nhập `────────`) mỗi cửa sổ `tmux` mỗi 15 giây bằng biểu thức `QUOTA_LIMIT_RE`.
+- Khi cửa sổ AI chạm trần (`⚠ Usage limit reached · limit resets ...`), gửi cảnh báo `🚨 CẢNH BÁO HẾT QUOTA / USAGE LIMIT!` kèm giờ reset và ghi `state/quota_alert_<safe_pane>.json` (chống báo lặp).
+- Khi đến giờ reset và cảnh báo biến mất khỏi màn hình `tmux`, xóa `state/quota_alert_<safe_pane>.json` và gửi bản tin `🟢 ĐÃ RESET QUOTA & CHẠY LẠI!`.
+
+### 10. Trạng thái sống trong `/list` & Dọn rác `state/` (`v1.4.0`)
+- `get_pane_live_status(pid)` hiển thị trạng thái trực tiếp của từng cửa sổ ngay trong `/list` (`💤 Sẵn sàng`, `⚙️ Đang thực thi...`, `⏰ Đang hẹn giờ (Timer)`, `🚨 Hết quota`).
+- `cleanup_orphan_state_files()` tự động xóa các file `start_*.txt` và `prompt_tg_*.flag` mồ côi cũ quá 12 giờ.
+
+### 11. Xử lý Bảng hỏi (`1/2/3`, `y/n`) & Hàng đợi thông minh (`Smart Queue` — `v1.4.0`)
+- `detect_interactive_prompt(pid)` nhận diện khi cửa sổ `tmux` đang dừng ở bảng hỏi quyền hoặc menu chọn `1/2/3`, `y/n`.
+- Khi gửi `1`, `2`, `3`, `y`, `n` lúc đang ở bảng hỏi, Daemon bơm phím trực tiếp và trả lời ACK ngay mà không chờ Hook `start`. Khi AI đang bận (`⚙️ Đang thực thi...`), Daemon gửi lệnh vào queue tự nhiên của `tmux`, tăng bộ đếm trong `waiting_<safe_pane>.flag`, và pong ngay bản tin `⏳ OK — Đã nhận lệnh (Lệnh này đang chờ xử lý)`.
+
+### 12. Nhận diện thao tác trực tiếp trên `tmux` / SSH (`is_tmux_session_actively_watched` — `v1.4.0`)
+- Kiểm tra `tmux list-clients -t <session> -F "#{client_activity}"` (chỉ tăng khi người dùng gõ phím thật trên client, không tăng khi Bot dùng `send-keys`).
+- Nếu người dùng đang gõ trực tiếp trên phiên `tmux` (trong vòng 5 phút), coi phiên đó đang ở chế độ `Here` kể cả khi màn hình vật lý của máy Mac đang khóa, tránh gửi trùng tin nhắn lên Telegram khi đang chat trực tiếp trên `tmux`.
+
+- **3 Cờ cấu hình trong `config.json`**:
+  - `notify_on_screen_lock` (bool, mặc định `true`): Có tự động báo Telegram khi khóa màn hình vật lý PC hay không.
+  - `notify_on_away` (bool, mặc định `true`): Có tự động báo Telegram khi bật `/away` hay không.
+  - `suppress_when_tmux_active` (bool, mặc định `true`): Tự động tắt báo trùng lên Telegram cho phiên `tmux` đang có người gõ trực tiếp (SSH/Terminal) trong 5 phút qua.

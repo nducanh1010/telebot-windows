@@ -11,7 +11,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -60,8 +60,50 @@ def load_config():
         return json.load(f)
 
 
-def is_screen_locked():
-    """Tự động phát hiện máy tính đang khóa màn hình (macOS / Windows / Ubuntu)."""
+def is_tmux_session_actively_watched(pane_id, idle_threshold=300):
+    """
+    Kiểm tra xem người dùng có đang trực tiếp mở và gõ trên phiên tmux này (qua Terminal hoặc SSH)
+    trong vòng idle_threshold giây (mặc định 5 phút) hay không.
+    Lưu ý: tmux send-keys từ Bot KHÔNG làm tăng client_activity, chỉ thao tác bàn phím/chuột thật mới làm tăng.
+    """
+    if not has_tmux() or not pane_id or pane_id.startswith("term:"):
+        return False
+    session_name = pane_id.split(":")[0]
+    out = run_tmux(["list-clients", "-t", session_name, "-F", "#{client_activity}"])
+    if not out:
+        return False
+    now = time.time()
+    for line in out.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            if (now - int(line)) < idle_threshold:
+                return True
+    return False
+
+
+def is_away_mode(cfg=None, pane_id=""):
+    """
+    Xác định có gửi thông báo tự động (Away) hay không dựa trên 3 cờ cấu hình trong config.json:
+    - suppress_when_tmux_active (mặc định True): Nếu đang trực tiếp gõ/xem phiên tmux (kể cả qua SSH điện thoại), không báo trùng lên Telegram.
+    - notify_on_away (mặc định True): Báo Telegram khi bật /away.
+    - notify_on_screen_lock (mặc định True): Báo Telegram khi màn hình vật lý của PC đang khóa.
+    """
+    if cfg is None:
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = {}
+    if cfg.get("suppress_when_tmux_active", True) and pane_id and is_tmux_session_actively_watched(pane_id):
+        return False
+    if cfg.get("notify_on_away", True) and os.path.exists(AWAY_FLAG_FILE):
+        return True
+    if cfg.get("notify_on_screen_lock", True) and is_screen_locked():
+        return True
+    return False
+
+
+def is_screen_locked(pane_id=""):
+    """Phát hiện màn hình vật lý của PC đang khóa (macOS / Windows / Ubuntu)."""
     try:
         if IS_MAC:
             out = subprocess.check_output(
@@ -459,7 +501,13 @@ def main():
             except Exception:
                 pass
 
-        if not dispatched_from_tg and not is_screen_locked():
+        if not dispatched_from_tg:
+            # Người dùng vừa gõ lệnh trực tiếp trên cửa sổ này -> Xóa cờ waiting cũ (nếu bị kẹt) và tắt away_mode thủ công
+            if os.path.exists(tg_flag_file):
+                try:
+                    os.remove(tg_flag_file)
+                except OSError:
+                    pass
             if os.path.exists(AWAY_FLAG_FILE):
                 try:
                     os.remove(AWAY_FLAG_FILE)
@@ -500,7 +548,7 @@ def main():
             print(json.dumps({"decision": "allow"}))
             return
 
-        is_away = os.path.exists(AWAY_FLAG_FILE) or is_screen_locked()
+        is_away = is_away_mode( None, pane_id)
         from_tg = os.path.exists(tg_flag_file) or os.path.exists(prompt_tg_flag)
         if is_away or from_tg:
             sync_active_pane_if_tmux(pane_id)
@@ -542,17 +590,23 @@ def main():
 
     ack_pending_file = os.path.join(STATE_DIR, f"ack_pending_{safe_pane}.json")
     from_telegram = os.path.exists(tg_flag_file) or explicit_tg_prompt
-    # Không xóa waiting flag nếu đang có một lệnh mới vừa gửi từ Telegram đang chờ ACK (queued)
     if os.path.exists(tg_flag_file) and not os.path.exists(ack_pending_file):
         try:
-            os.remove(tg_flag_file)
+            with open(tg_flag_file, "r", encoding="utf-8") as f:
+                raw_cnt = f.read().strip()
+            cnt = int(raw_cnt) if raw_cnt.isdigit() else 1
+            if cnt > 1:
+                with open(tg_flag_file, "w", encoding="utf-8") as f:
+                    f.write(str(cnt - 1))
+            else:
+                os.remove(tg_flag_file)
         except OSError:
             pass
 
-    is_away = os.path.exists(AWAY_FLAG_FILE) or is_screen_locked()
+    is_away = is_away_mode( None, pane_id)
     tagged_notify = has_notify_tag(last_msg)
     needs_decision = tagged_notify and is_really_asking_decision(last_msg)
-    is_error = term_reason in ("ERROR", "MAX_INVOCATIONS", "MAX_TOKEN_BUDGET_EXCEEDED")
+    is_error = (event == "stop_failure") or (term_reason in ("ERROR", "MAX_INVOCATIONS", "MAX_TOKEN_BUDGET_EXCEEDED"))
     is_long_task = duration >= cfg.get("min_duration_seconds", 180)
 
     should_notify = from_telegram or (is_away and (tagged_notify or is_error or is_long_task))
