@@ -359,6 +359,12 @@ def main():
                                 "message_id": msg_id,
                                 "text": "✖️ Đã hủy thao tác gửi phím."
                             })
+                    elif data == "release_ide":
+                        with open(os.path.join(STATE_DIR, "ide_release.flag"), "w", encoding="utf-8") as f:
+                            f.write("1")
+                        set_away_mode(False)
+                        tg_api(token, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Đã nhả IDE!"})
+                        tg_send(token, chat_id, "💻 Đã nhả phiên chờ trên IDE (bạn có thể gõ trực tiếp trên IDE bình thường).")
                     elif data.startswith("key:"):
                         _, rest = data.split(":", 1)
                         pane, key = rest.rsplit(":", 1)
