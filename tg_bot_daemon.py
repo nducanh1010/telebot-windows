@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import re
 import json
 import time
 import shutil
@@ -58,7 +59,7 @@ def list_windows_terminals():
     ps_script = (
         "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
         "Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and "
-        "($_.ProcessName -match 'WindowsTerminal|powershell|pwsh|cmd|agy|claude|codex|mintty|ConEmu') } | "
+        "($_.ProcessName -match 'WindowsTerminal|powershell|pwsh|cmd|agy|claude|codex|mintty|ConEmu|Antigravity|Cursor|Code') } | "
         "ForEach-Object { \"$($_.Id) | $($_.ProcessName) | $($_.MainWindowTitle)\" }"
     )
     try:
@@ -142,19 +143,45 @@ def tg_send(token, chat_id, text, reply_markup=None):
 
 
 def list_ide_targets():
-    if not os.path.exists(IDE_SESSIONS_FILE):
-        return []
-    out = []
-    try:
-        with open(IDE_SESSIONS_FILE, "r", encoding="utf-8") as f:
-            sessions = json.load(f)
-        for label, info in sessions.items():
-            # Chỉ hiện các phiên IDE hoạt động trong 24h qua
-            if time.time() - info.get("updated_at", 0) < 86400:
-                out.append(f"{label} | IDE | {info.get('cwd', '')}")
-    except Exception:
-        pass
-    return out
+    found = {}
+    # 1. Quét trực tiếp các tiến trình IDE đang mở trên macOS / Linux (ngay cả khi chưa gõ câu chat nào)
+    if not IS_WINDOWS:
+        try:
+            res = subprocess.run(
+                ["ps", "-eo", "pid,args"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            for line in res.stdout.splitlines():
+                if "/agy --hub" in line and "--add-dir=" in line:
+                    m = re.search(r"--add-dir=([^\s]+)", line)
+                    if m:
+                        wpath = m.group(1).strip()
+                        if os.path.isdir(wpath):
+                            folder = os.path.basename(os.path.normpath(wpath)) or "workspace"
+                            label = f"ide:agy-ide:{folder}"
+                            found[label] = f"{label} | Antigravity IDE | {wpath}"
+                elif "/Applications/Claude.app/Contents/MacOS/Claude" in line and "Helper" not in line:
+                    label = "ide:claude-app"
+                    found[label] = f"{label} | Claude App | /Applications/Claude.app"
+        except Exception:
+            pass
+
+    # 2. Bổ sung các phiên IDE đã ghi nhận qua Hook trong 24h qua
+    if os.path.exists(IDE_SESSIONS_FILE):
+        try:
+            with open(IDE_SESSIONS_FILE, "r", encoding="utf-8") as f:
+                sessions = json.load(f)
+            for label, info in sessions.items():
+                if time.time() - info.get("updated_at", 0) < 86400 and label not in found:
+                    found[label] = f"{label} | IDE | {info.get('cwd', '')}"
+        except Exception:
+            pass
+    return list(found.values())
 
 
 def list_targets():
