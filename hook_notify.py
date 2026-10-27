@@ -359,24 +359,13 @@ def wait_for_ide_telegram_reply(safe_pane, transcript_path, timeout_sec=580):
     start_wait = time.time()
     deadline = start_wait + timeout_sec
     while time.time() < deadline:
-        # 1. Nếu bấm nút Nhả IDE trên Telegram
+        # 1. Nếu bấm nút Nhả IDE hoặc /here trên Telegram
         if os.path.exists(release_file):
             try:
                 os.remove(release_file)
             except OSError:
                 pass
             break
-
-        # 2. Sau 3.5 giây ân hạn ban đầu, nếu người dùng chạm vào chuột hoặc bàn phím PC
-        # (khi màn hình PC không khóa), tự động nhả IDE ngay lập tức để gõ trên IDE không phải chờ!
-        if time.time() - start_wait > 3.5 and not is_screen_locked():
-            if get_user_idle_seconds() < 0.8:
-                if os.path.exists(AWAY_FLAG_FILE):
-                    try:
-                        os.remove(AWAY_FLAG_FILE)
-                    except OSError:
-                        pass
-                break
 
         # 3. Nếu có tin nhắn trả lời từ Telegram gửi vào hộp thư IDE
         if os.path.exists(inbox_file):

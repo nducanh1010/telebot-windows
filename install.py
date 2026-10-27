@@ -128,17 +128,25 @@ def update_claude_hooks():
 
     hooks = data.setdefault("hooks", {})
 
-    def add_claude_hook(event_name, cmd, timeout=30):
+    def add_claude_hook(event_name, cmd, timeout=30, label="AI Telegram Bridge"):
         arr = hooks.setdefault(event_name, [])
         arr[:] = [
             item for item in arr
             if not any("hook_notify.py" in h.get("command", "") for h in item.get("hooks", []))
         ]
-        arr.append({"hooks": [{"type": "command", "command": cmd, "timeout": timeout}]})
+        arr.append({
+            "hooks": [{
+                "type": "command",
+                "name": label,
+                "statusMessage": label,
+                "command": cmd,
+                "timeout": timeout,
+            }]
+        })
 
-    add_claude_hook("UserPromptSubmit", f"{HOOK_CMD_PREFIX} start", 15)
-    add_claude_hook("Notification", f"{HOOK_CMD_PREFIX} ask", 15)
-    add_claude_hook("Stop", f"{HOOK_CMD_PREFIX} stop", 600)
+    add_claude_hook("UserPromptSubmit", f"{HOOK_CMD_PREFIX} start", 15, "AI Telegram Bridge (Start)")
+    add_claude_hook("Notification", f"{HOOK_CMD_PREFIX} ask", 15, "AI Telegram Bridge (Ask)")
+    add_claude_hook("Stop", f"{HOOK_CMD_PREFIX} stop", 600, "AI Telegram Bridge (Stop)")
 
     with open(settings_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
@@ -158,16 +166,24 @@ def update_codex_hooks():
 
     hooks = data.setdefault("hooks", {})
 
-    def add_codex_hook(event_name, cmd, timeout=30):
+    def add_codex_hook(event_name, cmd, timeout=30, label="AI Telegram Bridge"):
         arr = hooks.setdefault(event_name, [])
         arr[:] = [
             item for item in arr
             if not any("hook_notify.py" in h.get("command", "") for h in item.get("hooks", []))
         ]
-        arr.append({"hooks": [{"type": "command", "command": cmd, "timeout": timeout}]})
+        arr.append({
+            "hooks": [{
+                "type": "command",
+                "name": label,
+                "statusMessage": label,
+                "command": cmd,
+                "timeout": timeout,
+            }]
+        })
 
-    add_codex_hook("UserPromptSubmit", f"{HOOK_CMD_PREFIX} start", 15)
-    add_codex_hook("Stop", f"{HOOK_CMD_PREFIX} stop", 600)
+    add_codex_hook("UserPromptSubmit", f"{HOOK_CMD_PREFIX} start", 15, "AI Telegram Bridge (Start)")
+    add_codex_hook("Stop", f"{HOOK_CMD_PREFIX} stop", 600, "AI Telegram Bridge (Stop)")
 
     with open(hooks_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
