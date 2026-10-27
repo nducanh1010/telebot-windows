@@ -10,7 +10,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -293,6 +293,21 @@ def set_active_pane(pane):
         f.write(pane.strip())
 
 
+def extract_reply_target_pane(msg):
+    """
+    Khi người dùng vuốt Reply trực tiếp vào một tin nhắn của cửa sổ B trên Telegram,
+    trích xuất mã cửa sổ B từ tiêu đề '🖥 [B]' hoặc '📺 [B]' để gửi đúng vào B mà không làm mất cửa sổ A đang chọn.
+    """
+    reply_msg = msg.get("reply_to_message")
+    if not isinstance(reply_msg, dict):
+        return ""
+    replied_text = reply_msg.get("text") or ""
+    m = re.search(r"(?:🖥|📺)\s*\*?\[([^\]]+)\]", replied_text)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
 def capture_screen(pane):
     if has_tmux() and not pane.startswith("term:"):
         code, out, _ = run_tmux(["capture-pane", "-t", pane, "-p"])
@@ -556,7 +571,17 @@ def main():
 
                 text = msg["text"].strip()
                 cmd_word = text.split()[0].lower().split("@")[0] if text else ""
-                pane = get_active_pane()
+                default_pane = get_active_pane()
+                reply_pane = extract_reply_target_pane(msg)
+                pane = reply_pane if reply_pane else default_pane
+
+                if reply_pane and reply_pane.startswith("term:"):
+                    tg_send(
+                        token,
+                        chat_id,
+                        f"⚠️ Cửa sổ `[{reply_pane}]` là Terminal thường chạy ngoài `tmux` nên không nhận được phím từ Telegram.\n👉 Cửa sổ đang chọn mặc định của bạn vẫn là `[{default_pane}]`.",
+                    )
+                    continue
 
                 if cmd_word in ("/start", "/help"):
                     help_text = (

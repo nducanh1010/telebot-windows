@@ -11,7 +11,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -226,6 +226,12 @@ def build_inline_buttons(pane_id, mode="stop"):
 def send_telegram(text, pane_id, mode="stop"):
     cfg = load_config()
     url = f"https://api.telegram.org/bot{cfg['bot_token']}/sendMessage"
+    active_now = get_saved_active_pane()
+    if active_now and active_now != pane_id and mode in ("stop", "ask"):
+        text = (
+            f"{text}\n\n"
+            f"📌 _Đang chọn mặc định: `{active_now}` — Hãy **Reply** tin nhắn này hoặc bấm **🎯 Chọn {pane_id}** nếu muốn gửi lệnh vào `{pane_id}`._"
+        )
     chunks = split_message_chunks(text, max_len=3500)
     total = len(chunks)
     reply_markup = build_inline_buttons(pane_id, mode=mode)
@@ -344,8 +350,29 @@ def user_prompt_requests_telegram(user_text):
     return bool(TG_USER_PROMPT_RE.search(cleaned))
 
 
-def looks_like_human_decision_needed(text):
+def has_notify_tag(text):
     return text.lstrip().startswith(NOTIFY_TAG)
+
+
+ASKING_USER_RE = re.compile(
+    r"(\?\s*$|bạn chọn|bạn muốn|phương án nào|hướng nào|xác nhận giúp|bạn có muốn|bạn đồng ý|choose|which option|do you want)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def is_really_asking_decision(text):
+    """
+    Phân biệt rõ giữa:
+    - Báo cáo tổng kết / hoàn thành cột mốc (có [TG_NOTIFY] nhưng không hỏi user chốt phương án).
+    - Thực sự cần user quyết định / trả lời câu hỏi ở phần kết.
+    """
+    clean = text.replace(NOTIFY_TAG, "").strip()
+    if not clean:
+        return False
+    tail = clean[-400:]
+    if "?" in tail or ASKING_USER_RE.search(tail):
+        return True
+    return False
 
 
 def sanitize_filename(name):
@@ -354,14 +381,28 @@ def sanitize_filename(name):
     return name
 
 
-def sync_active_pane_if_tmux(pane_id):
-    """P1: Tự động chuyển active_pane sang cửa sổ tmux vừa gửi thông báo để user reply ngay."""
-    if is_in_tmux_session() and not pane_id.startswith("term:"):
+def get_saved_active_pane():
+    if os.path.exists(ACTIVE_PANE_FILE):
         try:
-            with open(ACTIVE_PANE_FILE, "w", encoding="utf-8") as f:
-                f.write(pane_id.strip())
+            with open(ACTIVE_PANE_FILE, "r", encoding="utf-8") as f:
+                return f.read().strip()
         except Exception:
             pass
+    return ""
+
+
+def sync_active_pane_if_tmux(pane_id):
+    """
+    Chỉ khởi tạo active_pane.txt nếu chưa có cửa sổ nào được chọn.
+    Khi người dùng đã chọn cửa sổ A, tuyệt đối KHÔNG tự động ghi đè sang B khi B bắn thông báo.
+    """
+    if is_in_tmux_session() and not pane_id.startswith("term:"):
+        if not get_saved_active_pane():
+            try:
+                with open(ACTIVE_PANE_FILE, "w", encoding="utf-8") as f:
+                    f.write(pane_id.strip())
+            except Exception:
+                pass
 
 
 def main():
@@ -509,24 +550,27 @@ def main():
             pass
 
     is_away = os.path.exists(AWAY_FLAG_FILE) or is_screen_locked()
-    needs_human = looks_like_human_decision_needed(last_msg)
+    tagged_notify = has_notify_tag(last_msg)
+    needs_decision = tagged_notify and is_really_asking_decision(last_msg)
     is_error = term_reason in ("ERROR", "MAX_INVOCATIONS", "MAX_TOKEN_BUDGET_EXCEEDED")
     is_long_task = duration >= cfg.get("min_duration_seconds", 180)
 
-    should_notify = from_telegram or (is_away and (needs_human or is_error or is_long_task))
+    should_notify = from_telegram or (is_away and (tagged_notify or is_error or is_long_task))
 
     if should_notify:
         sync_active_pane_if_tmux(pane_id)
         clean_msg = last_msg.replace(NOTIFY_TAG, "").strip() or "(Đã hoàn thành thao tác)"
         if from_telegram:
             prefix = "💬 *Trả lời truy vấn của bạn:*"
-        elif needs_human:
+        elif needs_decision:
             prefix = "🙋‍♂️ *Cần chốt phương án / nghiệp vụ:*"
+        elif tagged_notify:
+            prefix = f"📋 *Báo cáo tổng kết ({int(duration)}s):*" if duration >= 5 else "📋 *Báo cáo tổng kết:*"
         elif is_error:
             prefix = f"⚠️ *Cảnh báo dừng ({term_reason}):*"
         else:
             prefix = f"✅ *Hoàn thành task ({int(duration)}s):*"
-        send_telegram(f"{prefix}\n\n{clean_msg}", pane_id, mode="ask" if needs_human else "stop")
+        send_telegram(f"{prefix}\n\n{clean_msg}", pane_id, mode="ask" if needs_decision else "stop")
 
     print("{}")
 

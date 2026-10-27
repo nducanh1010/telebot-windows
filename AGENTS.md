@@ -81,3 +81,9 @@ should_notify = from_telegram OR (is_away AND (needs_human OR is_long_task OR is
 - Khi gửi lệnh từ Telegram vào `tmux`, Daemon ghi `state/ack_pending_<safe_pane>.json` và tự động thoát `copy-mode` (`tmux copy-mode -q`).
 - Ngay khi AI nhận được prompt (trước khi thực thi), Hook `start` (`PreInvocation` / `UserPromptSubmit`) xóa `ack_pending` và gửi bản tin `✅ OK — Đã nhận lệnh tại cửa sổ <pane>` kèm tên công cụ và thư mục.
 - Nếu sau 5 giây Hook `start` không phản hồi (do gửi nhầm cửa sổ `tmux` hoặc con trỏ không ở ô nhập), Daemon gửi cảnh báo kèm màn hình hiện tại của `tmux`.
+
+### 8. Khóa cố định cửa sổ `A`, Hỗ trợ Swipe `Reply` sang `B` & Phân loại Báo cáo (`v1.3.0`)
+- **Không tự động đổi `active_pane.txt` ngầm**: Khi người dùng đã chọn cửa sổ `A`, `hook_notify.py` của cửa sổ `B` tuyệt đối không ghi đè `active_pane.txt`. Cuối tin nhắn của `B` sẽ có dòng nhắc `📌 Đang chọn mặc định: A`.
+- **Hỗ trợ vuốt `Reply` trên Telegram**: `extract_reply_target_pane(msg)` trong `tg_bot_daemon.py` tự nhận diện tiêu đề `🖥 [B]` hoặc `📺 [B]` của tin nhắn được Reply để định tuyến riêng câu trả lời đó vào `B`.
+- **Tách biệt `📋 Báo cáo tổng kết` và `🙋‍♂️ Cần chốt phương án / nghiệp vụ`**: `is_really_asking_decision()` kiểm tra đoạn kết của tin nhắn có câu hỏi cần người dùng quyết định hay chỉ là báo cáo hoàn thành cột mốc.
+- **Quy tắc bắt buộc khi sửa đổi**: Mỗi lần thay đổi nghiệp vụ, **bắt buộc phải cập nhật đồng bộ file `FLOW_NGHIEP_VU_VA_KE_HOACH.md` và `AGENTS.md`**.

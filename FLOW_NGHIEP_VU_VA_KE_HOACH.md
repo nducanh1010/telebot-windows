@@ -1,113 +1,83 @@
-# Tài liệu Luồng Nghiệp Vụ & Kế Hoạch Nâng Cấp (`ai-telegram`)
+# Tài liệu Luồng Nghiệp Vụ & Kế Hoạch Nâng Cấp (`ai-telegram` — `v1.3.0`)
 
-Tài liệu này tổng hợp **luồng nghiệp vụ chuẩn (Business Flows)** đã được kiểm chứng thực tế và **kế hoạch nâng cấp theo thứ tự ưu tiên (Upgrade Roadmap)** cho hệ thống cầu nối điều khiển AI qua Telegram (`agy`, `claude`, `codex`).
+Tài liệu này tổng hợp **luồng nghiệp vụ chuẩn (Core Business Flows)** đã được triển khai thực tế tới phiên bản **`v1.3.0`** và **lộ trình các hạng mục nâng cấp** cho hệ thống cầu nối điều khiển AI qua Telegram (`agy`, `claude`, `codex`).
 
 ---
 
-## Phần 1: Luồng Nghiệp Vụ Chuẩn (Core Business Flows)
+## Phần 1: Luồng Nghiệp Vụ Chuẩn (Core Business Flows — `v1.3.0`)
 
 ### 1. Nguyên tắc cốt lõi
-1. **Không giữ Hook chặn (Non-blocking Hooks)**: Mọi Hook (`start`, `ask`, `stop`) chỉ làm nhiệm vụ ghi nhận trạng thái và bắn thông báo HTTP sang Telegram rồi thoát ngay lập tức (`print("{}")`). Tuyệt đối không giữ vòng lặp chờ trong Hook để không bao giờ làm treo Terminal hay IDE.
-2. **Điều khiển 2 chiều dựa trên `tmux`**: Chiều từ Telegram $\rightarrow$ AI sử dụng `tmux send-keys` (hoặc Windows Terminal API trên Windows) để bơm lệnh trực tiếp vào cửa sổ bất kỳ lúc nào mà không phụ thuộc trạng thái Hook.
-3. **Không làm phiền khi ngồi máy (`Here`) — Tự động báo khi rời máy (`Away`)**.
+1. **Không giữ Hook chặn (Non-blocking Hooks)**: Mọi Hook (`start`, `ask`, `stop`) chỉ ghi nhận trạng thái và bắn thông báo HTTP sang Telegram rồi thoát ngay lập tức (`print("{}")`). Tuyệt đối không giữ vòng lặp chờ trong Hook để không bao giờ làm treo Terminal hay IDE.
+2. **Xác nhận 2 lớp (Pre-execution Hook ACK)**:
+   - Khi nhắn tin từ Telegram vào `tmux`, Daemon tự động thoát `copy-mode` (`tmux copy-mode -q`) rồi bơm lệnh và tạo cờ `ack_pending_<pane>.json`.
+   - Ngay khi AI nhận được lệnh vào ô nhập (trước khi thực thi), **Hook `start`** (`PreInvocation` / `UserPromptSubmit`) xóa `ack_pending` và bắn bản tin xác nhận:
+     `✅ OK — Đã nhận lệnh tại cửa sổ <pane> (<tool> • <folder>)`
+   - Nếu sau **5 giây** mà Hook `start` không phản hồi (do gửi nhầm cửa sổ `tmux` hoặc con trỏ trong `tmux` không nằm ở ô nhập), Daemon lập tức gửi cảnh báo kèm ảnh chụp văn bản màn hình hiện tại và các nút cứu hộ (`[⏎ Gửi thêm Enter]`, `[⏹ Gửi phím Esc]`, `[📋 Đổi cửa sổ khác]`).
+3. **Khóa cố định cửa sổ đang chọn (`A`) & Hỗ trợ vuốt `Reply` cho cửa sổ `B`**:
+   - Khi bạn đã chọn cửa sổ **A**, `active_pane.txt` **luôn giữ cố định là A** (không bao giờ tự động nhảy sang **B** khi **B** bắn thông báo chen ngang).
+   - Khi **B** báo tin về mà đang chọn **A** (`B != A`), cuối tin nhắn của **B** hiển thị dòng nhắc:
+     `📌 Đang chọn mặc định: A — Hãy Reply tin nhắn này hoặc bấm 🎯 Chọn B nếu muốn gửi lệnh vào B.`
+   - Nếu bạn **vuốt trả lời (`Reply`)** trực tiếp vào bất kỳ tin nhắn nào của **B** trên Telegram, Daemon tự trích xuất tên cửa sổ `[B]` từ tiêu đề tin nhắn được Reply để gửi riêng câu trả lời đó vào **B** mà vẫn giữ **A** làm mặc định.
+4. **Phân biệt rõ `📋 Báo cáo tổng kết` và `🙋‍♂️ Cần chốt phương án / nghiệp vụ`**:
+   - Khi AI gắn nhãn thông báo ở đầu câu để báo cáo hoàn thành cột mốc (không có câu hỏi xin ý kiến ở cuối bài), hệ thống hiển thị **`📋 Báo cáo tổng kết (<thời_gian>s):`** và chỉ hiện nút `[🎯 Chọn cửa sổ]`, `[📸 Xem màn hình]` (không hiện nút `Yes / No`).
+   - Chỉ khi AI thực sự đặt câu hỏi hoặc yêu cầu chọn phương án ở đoạn kết (`is_really_asking_decision`), hệ thống mới hiển thị **`🙋‍♂️ Cần chốt phương án / nghiệp vụ:`** kèm các nút `[✅ Yes (y)] [❌ No (n)] [⏎ Enter]`.
 
 ---
 
-### 2. Sơ đồ Luồng Nghiệp Vụ (Flowchart)
+### 2. Sơ đồ Luồng Nghiệp Vụ (`v1.3.0`)
 
 ```mermaid
 flowchart TD
-    subgraph StartTurn ["1. Bắt đầu lượt chạy (start hook)"]
-        A["Người dùng gửi câu lệnh cho AI"] --> B{"Có cờ from_tg_dispatch.flag?\n(Gửi từ Telegram trong 15s qua)"}
-        B -- "Không (Gõ trực tiếp trên PC)" --> C{"Màn hình PC đang mở?"}
-        C -- "Có" --> D["Tự động xóa away_mode.flag\n(Chuyển về chế độ Here)"]
-        B -- "Có (Từ Telegram)" --> E["Giữ nguyên trạng thái"]
-        D --> F{"Câu lệnh có chữ 'tg'\nở đầu hoặc cuối?"}
-        E --> F
-        F -- "Có" --> G["Tạo prompt_tg_<conv_id>.flag"]
-        F -- "Không" --> H["Ghi start_<conv_id>.txt (đo thời gian)\nThoát Hook ngay lập tức"]
-        G --> H
+    subgraph FromTelegram ["1. Chiều từ Telegram -> tmux (tg_bot_daemon.py)"]
+        T1["Người dùng nhắn tin trên Telegram"] --> T2{"Có vuốt Reply vào
+tin nhắn của cửa sổ B?"}
+        T2 -- "Có" --> T3["Định tuyến riêng lượt này vào B
+(Giữ nguyên mặc định là A)"]
+        T2 -- "Không" --> T4["Định tuyến vào cửa sổ mặc định A"]
+        T3 --> T5["Thoát copy-mode (tmux copy-mode -q)
+Ghi ack_pending_<pane>.json & bơm phím"]
+        T4 --> T5
+        T5 --> T6{"Hook start của AI có xóa
+ack_pending trong 5s?"}
+        T6 -- "Có (< 5s)" --> T7["Hook start gửi ngay:
+✅ OK — Đã nhận lệnh tại <pane>"]
+        T6 -- "Không (Quá 5s)" --> T8["Daemon báo ⚠️ CHƯA NHẬN ĐƯỢC LỆNH
++ Chụp màn hình hiện tại + Nút Enter/Esc"]
     end
 
-    subgraph AskEvent ["2. Khi AI xin quyền / hỏi (ask hook)"]
-        I["Sự kiện PreToolUse / Notification"] --> J{"Có phải idle_prompt\n('waiting for your input')?"}
-        J -- "Có" --> K["Bỏ qua (Không gửi Telegram)"]
-        J -- "Không (Xin quyền / Hỏi thật)" --> L{"Đang Away HOẶC\nlượt này từ Telegram/tg?"}
-        L -- "Có" --> M["Gửi Telegram: ❓ AI cần xác nhận"]
-        L -- "Không (Đang ngồi máy)" --> K
+    subgraph StartTurn ["2. Bắt đầu lượt chạy (hook_notify.py start)"]
+        A["Sự kiện PreInvocation / UserPromptSubmit"] --> B{"Có ack_pending_<pane>.json?"}
+        B -- "Có (Từ Telegram)" --> C["Xóa ack_pending & Gửi Telegram:
+✅ OK — Đã nhận lệnh tại <pane>"]
+        B -- "Không (Gõ trên PC)" --> D{"Màn hình PC đang mở?"}
+        D -- "Có" --> E["Tự động xóa away_mode.flag
+(Chuyển về chế độ Here)"]
     end
 
-    subgraph StopTurn ["3. Kết thúc lượt chạy (stop hook)"]
-        N["AI trả lời xong (Stop)"] --> O["Tính duration = now - start_time\nĐọc câu trả lời cuối từ payload/transcript"]
-        O --> P{"Lượt này từ Telegram\nhoặc có cờ 'tg'?"}
-        P -- "Có (from_telegram = True)" --> Q["Gửi câu trả lời về Telegram\nThoát Hook ngay lập tức"]
-        P -- "Không" --> R{"Đang ở chế độ Away?\n(Khóa màn hình HOẶC /away)"}
-        R -- "Không (Đang ngồi máy - Here)" --> S["Im lặng hoàn toàn\nThoát Hook ngay lập tức"]
-        R -- "Có (Đang vắng mặt - Away)" --> T{"Có [TG_NOTIFY] đầu câu\nHOẶC chạy >= 180s\nHOẶC gặp lỗi?"}
-        T -- "Có" --> Q
-        T -- "Không (Lệnh ngắn bình thường)" --> S
+    subgraph StopTurn ["3. Kết thúc lượt chạy (hook_notify.py stop)"]
+        N["AI trả lời xong (Stop)"] --> O{"Lượt này từ Telegram
+hoặc gõ kèm 'tg'?"}
+        O -- "Có" --> P["Gửi: 💬 Trả lời truy vấn của bạn"]
+        O -- "Không (Chạy ở chế độ Away)" --> Q{"Có nhãn thông báo
+ở đầu câu?"}
+        Q -- "Có + Cuối bài có câu hỏi" --> R["Gửi: 🙋‍♂️ Cần chốt phương án / nghiệp vụ
+(Kèm nút Yes / No / Enter)"]
+        Q -- "Có + Báo cáo kết quả" --> S["Gửi: 📋 Báo cáo tổng kết
+(Không hiện nút Yes / No)"]
+        Q -- "Không (Chạy >= 180s)" --> U["Gửi: ✅ Hoàn thành task"]
     end
 ```
 
 ---
 
-### 3. Chi tiết 3 Kịch bản Sử dụng Hàng ngày
+## Phần 2: Trạng Thái Kế Hoạch Nâng Cấp (Upgrade Roadmap)
 
-#### Kịch bản A: Đang ngồi làm việc trước máy tính (`Here` Mode)
-* **Mặc định**: Bạn mở màn hình máy tính và gõ lệnh trên Terminal. Hệ thống ở trạng thái `Here`.
-* **Hành vi**: AI chạy xong (dù nhanh hay lâu) đều **chỉ hiển thị trên màn hình PC**, không bắn thông báo sang Telegram gây nhiễu.
-* **Khi muốn đẩy nhanh 1 kết quả sang điện thoại**: Bạn chỉ cần gõ thêm chữ `tg` ở đầu hoặc cuối câu lệnh (ví dụ: `tg kiểm tra lỗi build`, hoặc `tóm tắt MR này tg`). Riêng câu đó khi chạy xong sẽ gửi kết quả về Telegram và kết thúc lượt chạy ngay trên Terminal.
-
-#### Kịch bản B: Rời khỏi bàn làm việc (`Away` Mode)
-* **Cách kích hoạt**:
-  1. **Tự động**: Bạn khóa màn hình máy tính (`Cmd + Ctrl + Q` trên macOS / `Win + L` trên Windows). Hệ thống tự phát hiện màn hình khóa qua OS API (`is_screen_locked()`) mà không tốn tài nguyên chạy ngầm.
-  2. **Thủ công từ xa**: Nếu bạn rời bàn mà quên khóa màn hình, bạn mở Telegram bấm `/away` (hoặc chọn trong Menu `[☰]`).
-* **Hành vi**: Khi AI chạy xong một tác vụ nặng ($\ge 180$ giây), hoàn thành cột mốc có gắn nhãn thông báo ở đầu câu, dừng lại xin quyền chạy lệnh (`permission_prompt` / `ask_question`), hoặc gặp lỗi (`ERROR`), kết quả sẽ tự động báo về Telegram.
-* **Khi quay lại ngồi máy**: Bạn chỉ cần mở khóa màn hình và gõ bất kỳ câu lệnh nào trên PC, hệ thống tự động tắt `/away` để quay về `Here`.
-
-#### Kịch bản C: Điều khiển và trả lời từ điện thoại (`Telegram -> tmux`)
-* **Xem và chọn cửa sổ (`/list`)**: Liệt kê toàn bộ các cửa sổ `tmux` đang chạy (`coreinfraagy:0.0`, `coreinfraclaude:0.0`, `coreinfrashared:0.0`) kèm công cụ và đường dẫn thư mục. Bấm nút `🎯 Chọn ...` để chuyển cửa sổ nhận lệnh.
-* **Gửi câu lệnh mới hoặc trả lời AI**: Nhắn tin văn bản bất kỳ trên Telegram $\rightarrow$ Bot tự động gõ chữ vào cửa sổ `tmux` đang chọn, chờ `150ms` rồi bấm `Enter`, đồng thời đánh dấu `waiting_<pane>.flag` để khi AI xử lý xong sẽ gửi câu trả lời ngược về Telegram.
-* **Phím tắt điều khiển an toàn (`/yes`, `/no`, `/enter`, `/esc`, `/ctrlc`)**: Luôn hiển thị bước xác nhận lần 2 (`☑️ Xác nhận gửi` / `✖️ Hủy`) để chống bấm nhầm trên màn hình cảm ứng.
-
----
-
-## Phần 2: Kế Hoạch Nâng Cấp Theo Thứ Tự Ưu Tiên (Upgrade Plan)
-
-Dựa trên quá trình vận hành thực tế với nhiều cửa sổ (`coreinfraagy`, `coreinfraclaude`, các tab Terminal ngoài `tmux`), dưới đây là 4 hạng mục nâng cấp được sắp xếp từ **cần làm ngay (P1)** đến **mở rộng về sau (P4)**:
-
-### 🥇 Ưu tiên 1 (P1 — Làm trước nhất): Tách biệt rõ Terminal ngoài `tmux` & Tự động đồng bộ cửa sổ trả lời
-* **Vấn đề hiện tại**:
-  1. Trong `hook_notify.py`, khi bạn chạy `agy` hoặc `claude` ở một tab Terminal thường **bên ngoài `tmux`** (không có biến `TMUX_PANE`), lệnh fallback `tmux display-message -p "#S:#I.#P"` vẫn lấy tên của một phiên `tmux` đang chạy ngầm trên máy. Điều này làm tin nhắn gửi về Telegram bị gắn nhầm tên cửa sổ `tmux` khác.
-  2. Khi bạn chạy song song nhiều cửa sổ `tmux` (ví dụ `coreinfraagy:0.0` và `coreinfraclaude:0.0`), nếu `coreinfraagy:0.0` vừa báo kết quả về Telegram nhưng `active_pane` trước đó đang trỏ vào `coreinfraclaude:0.0`, bạn nhắn tin trả lời ngay sẽ bị gửi nhầm sang `coreinfraclaude:0.0`.
-* **Giải pháp P1**:
-  1. Trong `get_session_label()`: Chỉ lấy mã cửa sổ `tmux` khi có mặt biến môi trường `TMUX_PANE`. Nếu chạy ở tab Terminal ngoài `tmux`, đặt nhãn rõ là `term:<tên_thư_mục>` để biết ngay cửa sổ đó không nằm trong `tmux`.
-  2. Khi một cửa sổ `tmux` gửi thông báo về Telegram, **tự động cập nhật `active_pane.txt`** sang đúng cửa sổ `tmux` vừa báo (hoặc thêm nút `[🎯 Chọn cửa sổ này]` ngay dưới tin nhắn), để bạn gõ trả lời trên Telegram là vào đúng cửa sổ vừa hỏi.
-
----
-
-### 🥈 Ưu tiên 2 (P2): Giao diện nút bấm thông minh theo ngữ cảnh (Context-Aware Buttons)
-* **Vấn đề hiện tại**:
-  * Mọi tin nhắn trả lời gửi về Telegram (kể cả khi chỉ trả lời `"OK"` hoặc báo cáo kết quả đã xong) đều đang gắn cứng 4 nút `[✅ Yes (y)] [❌ No (n)] [⏎ Enter] [📸 Màn hình]`.
-  * Việc lúc nào cũng hiện nút `Yes (y)` / `No (n)` khiến người dùng có cảm giác AI vẫn đang treo chờ xác nhận ở mọi câu lệnh.
-* **Giải pháp P2**:
-  * **Với tin nhắn kết thúc lượt (`stop` hook)**: Chỉ hiển thị nút `[📸 Xem màn hình]` và `[🎯 Chọn cửa sổ này]` (nếu có nhiều cửa sổ).
-  * **Với tin nhắn AI xin quyền hoặc hỏi xác nhận (`ask` hook)**: Mới hiển thị đầy đủ `[✅ Yes (y)] [❌ No (n)] [⏎ Enter] [📸 Màn hình]`.
-
----
-
-### 🥉 Ưu tiên 3 (P3): Xử lý tin nhắn dài thông minh (Smart Long-Message Splitting)
-* **Vấn đề hiện tại**:
-  * Telegram giới hạn 4096 ký tự mỗi tin nhắn. Hiện tại `hook_notify.py` đang cắt `text[:3800]`.
-  * Với các báo cáo review code hoặc kế hoạch dài, phần kết luận quan trọng hoặc câu hỏi xin ý kiến thường nằm ở **cuối bài viết**, nếu cắt `[:3800]` sẽ bị mất đúng phần câu hỏi cuối cùng.
-* **Giải pháp P3**:
-  * Nếu nội dung trả lời dài hơn `3800` ký tự: Tự động chia thành tối đa 2-3 phần gửi nối tiếp nhau (`Phần 1/2`, `Phần 2/2`), hoặc lấy `1800 ký tự đầu + ... + 1800 ký tự cuối` để không bao giờ mất phần kết luận cuối câu.
-
----
-
-### 🏅 Ưu tiên 4 (P4 — Tùy chọn sau này): Hỗ trợ ứng dụng Desktop GUI không dùng Hook chặn
-* **Bài học kinh nghiệm**:
-  * Tuyệt đối **không dùng cơ chế giữ `Stop` Hook (`wait_for_ide_telegram_reply`)** cho các ứng dụng GUI (`Antigravity IDE`, `ChatGPT.app`, `Claude.app`) vì nó giữ trạng thái `Working` trên giao diện và gây rò rỉ cờ trạng thái sang Terminal.
-* **Giải pháp P4 (chỉ làm khi thực sự cần)**:
-  * Chuẩn hóa quy trình: Khi cần điều khiển từ xa qua Telegram thì chạy `agy`, `claude`, `codex` trong `tmux`.
-  * Nếu sau này muốn gửi tin vào cửa dụng GUI trên macOS, viết một module độc lập dùng `osascript` (AppleScript / System Events) chỉ kích hoạt khi bấm gửi từ Telegram mà không can thiệp vào `hook_notify.py`.
+| Hạng mục | Nội dung nâng cấp | Phiên bản | Trạng thái |
+| :--- | :--- | :---: | :---: |
+| **Base** | Cầu nối 2 chiều `tmux` <-> Telegram ổn định, không dùng Hook chặn | `v1.0.0` | ✅ Đã hoàn thành |
+| **P1** | Tách biệt định danh `tmux` (`TMUX_PANE`) và Terminal ngoài `tmux` (`term:<folder>`) | `v1.1.0` | ✅ Đã hoàn thành |
+| **P2** | Nút bấm thông minh theo ngữ cảnh (`ask` hiện `Yes/No`, `stop` ẩn `Yes/No`) | `v1.1.0` | ✅ Đã hoàn thành |
+| **P3** | Chia nhỏ tin nhắn dài thông minh theo dòng (giữ trọn phần đầu & phần kết luận cuối) | `v1.1.0` | ✅ Đã hoàn thành |
+| **ACK** | Xác nhận 2 lớp từ Hook `start` (`✅ OK — Đã nhận lệnh`) + Cảnh báo 5s khi lệch con trỏ | `v1.2.0` | ✅ Đã hoàn thành |
+| **Routing & Report** | Khóa cố định cửa sổ `A` + Hỗ trợ vuốt `Reply` vào cửa sổ `B` + Tách `📋 Báo cáo tổng kết` khỏi `🙋‍♂️ Cần chốt phương án` | `v1.3.0` | ✅ Đã hoàn thành |
+| **P4** | *(Tùy chọn)* Module AppleScript độc lập cho Desktop GUI (`ChatGPT.app`, `Claude.app`) | Tương lai | ⏸ Chưa cần thiết (ưu tiên dùng `tmux`) |
