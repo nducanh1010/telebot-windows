@@ -9,6 +9,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
+VERSION = "1.1.0"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -194,17 +195,50 @@ def tg_api(token, method, data):
         return json.loads(res.read().decode("utf-8"))
 
 
+def split_chunks(text, max_len=3600):
+    text = text.strip()
+    if len(text) <= max_len:
+        return [text] if text else ["(Trống)"]
+    chunks = []
+    rem = text
+    while rem:
+        if len(rem) <= max_len:
+            chunks.append(rem)
+            break
+        cut = rem.rfind("\n", 0, max_len)
+        if cut < max_len // 2:
+            cut = rem.rfind(" ", 0, max_len)
+        if cut < max_len // 2:
+            cut = max_len
+        chunks.append(rem[:cut].rstrip())
+        rem = rem[cut:].lstrip()
+    if len(chunks) > 4:
+        omitted = len(chunks) - 4
+        chunks = (
+            chunks[:2]
+            + [f"... _(Đã lược bớt {omitted} đoạn giữa)_ ..."]
+            + chunks[-2:]
+        )
+    return chunks
+
+
 def tg_send(token, chat_id, text, reply_markup=None):
-    for use_md in (True, False):
-        payload = {"chat_id": chat_id, "text": text[:3900]}
-        if use_md:
-            payload["parse_mode"] = "Markdown"
-        if reply_markup:
-            payload["reply_markup"] = json.dumps(reply_markup)
-        try:
-            return tg_api(token, "sendMessage", payload)
-        except Exception:
-            continue
+    chunks = split_chunks(text, max_len=3600)
+    last_res = None
+    for idx, chunk in enumerate(chunks, start=1):
+        is_last = idx == len(chunks)
+        for use_md in (True, False):
+            payload = {"chat_id": chat_id, "text": chunk}
+            if use_md:
+                payload["parse_mode"] = "Markdown"
+            if is_last and reply_markup:
+                payload["reply_markup"] = json.dumps(reply_markup)
+            try:
+                last_res = tg_api(token, "sendMessage", payload)
+                break
+            except Exception:
+                continue
+    return last_res
 
 
 def register_bot_menu(token):
@@ -259,11 +293,11 @@ def set_active_pane(pane):
 
 
 def capture_screen(pane):
-    if has_tmux():
+    if has_tmux() and not pane.startswith("term:"):
         code, out, _ = run_tmux(["capture-pane", "-t", pane, "-p"])
         if code == 0 and out.strip():
             lines = [line for line in out.splitlines() if line.strip()]
-            return "\n".join(lines[-35:])[-3500:] or "(Màn hình trống)"
+            return "\n".join(lines[-45:]) or "(Màn hình trống)"
 
     safe_pane = sanitize_filename(pane)
     for candidate in (
@@ -278,7 +312,7 @@ def capture_screen(pane):
                     from hook_notify import extract_last_turn
                     last_u, last_a = extract_last_turn(tpath)
                     if last_u or last_a:
-                        return f"👤 User: {last_u[-500:]}\n\n🤖 AI:\n{last_a[-2800:]}"
+                        return f"👤 User: {last_u[-600:]}\n\n🤖 AI:\n{last_a}"
             except Exception:
                 pass
     return "⚠️ Không thể chụp màn hình cửa sổ này (kiểm tra `/list`)."
@@ -400,7 +434,7 @@ def main():
                         _, pane = data.split(":", 1)
                         scr = capture_screen(pane)
                         tg_api(token, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Đang chụp màn hình..."})
-                        tg_send(token, chat_id, f"📺 [{pane}]:\n\n{scr}")
+                        tg_send(token, chat_id, f"📺 *[{pane}]*:\n\n{scr}")
 
                     elif data.startswith("use:"):
                         _, pane = data.split(":", 1)
@@ -420,7 +454,7 @@ def main():
 
                 if cmd_word in ("/start", "/help"):
                     help_text = (
-                        "🤖 *Điều khiển AI (agy / claude / codex) qua tmux*\n\n"
+                        f"🤖 *Điều khiển AI (agy / claude / codex) qua tmux (v{VERSION})*\n\n"
                         f"📡 Trạng thái: {get_mode_status_text()}\n"
                         f"🖥 Cửa sổ đang chọn: `{pane}`\n\n"
                         "• Nhắn tin bất kỳ: Gửi thẳng vào cửa sổ AI đang chọn và nhận câu trả lời qua Telegram.\n"
@@ -473,7 +507,7 @@ def main():
                         tg_send(
                             token,
                             chat_id,
-                            f"📋 *Danh sách cửa sổ AI*\n📡 {get_mode_status_text()}\n🎯 Đang chọn: `{pane}`\n\n{body}",
+                            f"📋 *Danh sách cửa sổ AI (v{VERSION})*\n📡 {get_mode_status_text()}\n🎯 Đang chọn: `{pane}`\n\n{body}",
                             reply_markup={"inline_keyboard": buttons},
                         )
 
@@ -484,7 +518,7 @@ def main():
 
                 elif cmd_word in ("/screen", "/status"):
                     scr = capture_screen(pane)
-                    tg_send(token, chat_id, f"📺 [{pane}]:\n\n{scr}")
+                    tg_send(token, chat_id, f"📺 *[{pane}]*:\n\n{scr}")
 
                 elif cmd_word == "/yes":
                     ask_key_confirmation(token, chat_id, pane, "y", "y + Enter")
@@ -510,7 +544,6 @@ def main():
                         reply_markup={
                             "inline_keyboard": [[
                                 {"text": "📸 Xem tiến độ màn hình", "callback_data": f"screen:{pane}"},
-                                {"text": "⏎ Enter", "callback_data": f"key:{pane}:Enter"},
                             ]]
                         },
                     )

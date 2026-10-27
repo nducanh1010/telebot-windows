@@ -11,6 +11,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
+VERSION = "1.1.0"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -22,6 +23,7 @@ STATE_DIR = os.path.join(BASE_DIR, "state")
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 AWAY_FLAG_FILE = os.path.join(STATE_DIR, "away_mode.flag")
 FROM_TG_DISPATCH_FILE = os.path.join(STATE_DIR, "from_tg_dispatch.flag")
+ACTIVE_PANE_FILE = os.path.join(STATE_DIR, "active_pane.txt")
 
 NOTIFY_TAG = "[TG_" + "NOTIFY]"
 
@@ -30,6 +32,10 @@ os.makedirs(STATE_DIR, exist_ok=True)
 
 def has_tmux():
     return shutil.which("tmux") is not None
+
+
+def is_in_tmux_session():
+    return bool(os.environ.get("TMUX_PANE")) and has_tmux()
 
 
 def run_tmux(args):
@@ -107,48 +113,111 @@ def is_screen_locked():
 
 
 def get_session_label(payload):
-    if has_tmux():
+    """
+    P1: Chỉ gắn nhãn phiên tmux khi thực sự chạy trong tmux (có biến TMUX_PANE).
+    Nếu chạy ở Terminal ngoài tmux, gắn nhãn 'term:<folder>' để không bao giờ nhận nhầm cửa sổ tmux khác.
+    """
+    if is_in_tmux_session():
         pane = os.environ.get("TMUX_PANE", "")
-        if pane:
-            out = run_tmux(["display-message", "-t", pane, "-p", "#S:#I.#P"])
-            if out:
-                return out
-        out = run_tmux(["display-message", "-p", "#S:#I.#P"])
+        out = run_tmux(["display-message", "-t", pane, "-p", "#S:#I.#P"])
         if out:
             return out
     workspaces = payload.get("workspacePaths") or []
     cwd = workspaces[0] if workspaces else (payload.get("cwd") or os.getcwd())
     folder = os.path.basename(os.path.normpath(cwd)) or "terminal"
-    return f"{platform.node()}:{folder}"
+    if IS_WINDOWS and not has_tmux():
+        return f"{platform.node()}:{folder}"
+    return f"term:{folder}"
 
 
-def send_telegram(text, pane_id):
-    cfg = load_config()
-    url = f"https://api.telegram.org/bot{cfg['bot_token']}/sendMessage"
-    reply_markup = {
-        "inline_keyboard": [
+def split_message_chunks(text, max_len=3500):
+    """
+    P3: Chia thông minh tin nhắn dài theo dòng để không bao giờ bị cắt mất phần kết luận cuối câu.
+    Nếu quá dài (> 4 phần), giữ 2 phần đầu + 2 phần cuối.
+    """
+    text = text.strip()
+    if len(text) <= max_len:
+        return [text] if text else ["(Trống)"]
+
+    chunks = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_len:
+            chunks.append(remaining)
+            break
+        cut = remaining.rfind("\n", 0, max_len)
+        if cut < max_len // 2:
+            cut = remaining.rfind(" ", 0, max_len)
+        if cut < max_len // 2:
+            cut = max_len
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+
+    if len(chunks) > 4:
+        omitted = len(chunks) - 4
+        chunks = (
+            chunks[:2]
+            + [f"... _(Đã lược bớt {omitted} đoạn giữa để giữ trọn phần đầu và phần kết luận cuối)_ ..."]
+            + chunks[-2:]
+        )
+    return chunks
+
+
+def build_inline_buttons(pane_id, mode="stop"):
+    """
+    P2: Hiển thị nút bấm theo đúng ngữ cảnh:
+    - mode == 'ask': Hiện đầy đủ Yes / No / Enter / Màn hình / Chọn cửa sổ khi AI thực sự hỏi xác nhận.
+    - mode == 'stop': Chỉ hiện Xem màn hình & Chọn cửa sổ (không hiện Yes/No gây hiểu nhầm).
+    """
+    is_tmux_pane = not pane_id.startswith("term:")
+    if mode == "ask":
+        rows = [
             [
                 {"text": "✅ Yes (y)", "callback_data": f"key:{pane_id}:y"},
                 {"text": "❌ No (n)", "callback_data": f"key:{pane_id}:n"},
                 {"text": "⏎ Enter", "callback_data": f"key:{pane_id}:Enter"},
-                {"text": "📸 Màn hình", "callback_data": f"screen:{pane_id}"},
-            ]
+            ],
+            [
+                {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"},
+            ],
         ]
-    }
-    for use_md in (True, False):
-        payload = {
-            "chat_id": cfg["chat_id"],
-            "text": f"🖥 *[{pane_id}]*\n\n{text[:3800]}" if use_md else f"🖥 [{pane_id}]\n\n{text[:3800]}",
-            "reply_markup": json.dumps(reply_markup),
-        }
-        if use_md:
-            payload["parse_mode"] = "Markdown"
-        try:
-            req = urllib.request.Request(url, data=urllib.parse.urlencode(payload).encode("utf-8"))
-            urllib.request.urlopen(req, timeout=10)
-            return
-        except Exception:
-            continue
+        if is_tmux_pane:
+            rows[1].insert(0, {"text": f"🎯 Chọn {pane_id}", "callback_data": f"use:{pane_id}"})
+        return {"inline_keyboard": rows}
+
+    # mode == "stop"
+    row = [{"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"}]
+    if is_tmux_pane:
+        row.insert(0, {"text": f"🎯 Chọn {pane_id}", "callback_data": f"use:{pane_id}"})
+    return {"inline_keyboard": [row]}
+
+
+def send_telegram(text, pane_id, mode="stop"):
+    cfg = load_config()
+    url = f"https://api.telegram.org/bot{cfg['bot_token']}/sendMessage"
+    chunks = split_message_chunks(text, max_len=3500)
+    total = len(chunks)
+    reply_markup = build_inline_buttons(pane_id, mode=mode)
+
+    for idx, chunk in enumerate(chunks, start=1):
+        is_last = idx == total
+        part_tag = f" ({idx}/{total})" if total > 1 else ""
+        for use_md in (True, False):
+            header = f"🖥 *[{pane_id}]{part_tag}*" if use_md else f"🖥 [{pane_id}]{part_tag}"
+            payload = {
+                "chat_id": cfg["chat_id"],
+                "text": f"{header}\n\n{chunk}",
+            }
+            if is_last:
+                payload["reply_markup"] = json.dumps(reply_markup)
+            if use_md:
+                payload["parse_mode"] = "Markdown"
+            try:
+                req = urllib.request.Request(url, data=urllib.parse.urlencode(payload).encode("utf-8"))
+                urllib.request.urlopen(req, timeout=10)
+                break
+            except Exception:
+                continue
 
 
 def extract_user_request_tag(raw_text):
@@ -179,12 +248,10 @@ def extract_last_turn(transcript_path):
                 if not line.strip():
                     continue
                 obj = json.loads(line)
-                # Định dạng của Antigravity (agy)
                 if obj.get("type") == "USER_INPUT" and obj.get("content"):
                     last_user = extract_user_request_tag(obj["content"])
                 elif obj.get("type") == "PLANNER_RESPONSE" and obj.get("content"):
                     last_text = obj["content"]
-                # Định dạng của Claude Code (claude)
                 elif obj.get("type") == "user" and isinstance(obj.get("message"), dict):
                     content = obj["message"].get("content", "")
                     if isinstance(content, str) and content.strip():
@@ -204,7 +271,6 @@ def extract_last_turn(transcript_path):
                             texts.append(block.get("text", ""))
                     if texts:
                         last_text = "\n".join(texts)
-                # Định dạng của OpenAI Codex CLI (codex)
                 elif obj.get("type") == "event_msg" and isinstance(obj.get("payload"), dict):
                     p = obj["payload"]
                     if p.get("type") == "task_complete" and p.get("last_agent_message"):
@@ -234,8 +300,6 @@ def extract_last_turn(transcript_path):
     return last_user.strip(), last_text.strip()
 
 
-# Nhận diện câu lệnh người dùng bắt đầu hoặc kết thúc bằng "tg"
-# Ví dụ: "tg kiểm tra...", "tg:...", "(tg) ...", "... tg", "... (tg)", "... [tg]"
 TG_USER_PROMPT_RE = re.compile(
     r"^(?:\(tg\)|\[tg\]|tg(?:\s*[:,-]|\s+))|(?:\s+tg|\s*[\(\[]tg[\)\]]|\s*[:,-]\s*tg)$",
     re.IGNORECASE,
@@ -257,6 +321,16 @@ def sanitize_filename(name):
     for ch in (":", ".", "/", "\\", " "):
         name = name.replace(ch, "_")
     return name
+
+
+def sync_active_pane_if_tmux(pane_id):
+    """P1: Tự động chuyển active_pane sang cửa sổ tmux vừa gửi thông báo để user reply ngay."""
+    if is_in_tmux_session() and not pane_id.startswith("term:"):
+        try:
+            with open(ACTIVE_PANE_FILE, "w", encoding="utf-8") as f:
+                f.write(pane_id.strip())
+        except Exception:
+            pass
 
 
 def main():
@@ -318,7 +392,6 @@ def main():
 
     # 2. Khi AI gọi tool hỏi user hoặc xin quyền (PreToolUse / Notification)
     if event == "ask":
-        # Bỏ qua thông báo idle_prompt ("Claude is waiting for your input") của Claude Code
         notif_type = (payload.get("notification_type") or "").lower()
         raw_msg = payload.get("message") or ""
         if notif_type == "idle_prompt" or "waiting for your input" in raw_msg.lower():
@@ -328,9 +401,10 @@ def main():
         is_away = os.path.exists(AWAY_FLAG_FILE) or is_screen_locked()
         from_tg = os.path.exists(tg_flag_file) or os.path.exists(prompt_tg_flag)
         if is_away or from_tg:
+            sync_active_pane_if_tmux(pane_id)
             tool_call = payload.get("toolCall", {})
             msg = raw_msg or json.dumps(tool_call.get("args", {}), ensure_ascii=False, indent=2)
-            send_telegram(f"❓ *AI cần bạn xác nhận / trả lời:*\n{msg}", pane_id)
+            send_telegram(f"❓ *AI cần bạn xác nhận / trả lời:*\n{msg}", pane_id, mode="ask")
         print(json.dumps({"decision": "allow"}))
         return
 
@@ -379,6 +453,7 @@ def main():
     should_notify = from_telegram or (is_away and (needs_human or is_error or is_long_task))
 
     if should_notify:
+        sync_active_pane_if_tmux(pane_id)
         clean_msg = last_msg.replace(NOTIFY_TAG, "").strip() or "(Đã hoàn thành thao tác)"
         if from_telegram:
             prefix = "💬 *Trả lời truy vấn của bạn:*"
@@ -388,7 +463,7 @@ def main():
             prefix = f"⚠️ *Cảnh báo dừng ({term_reason}):*"
         else:
             prefix = f"✅ *Hoàn thành task ({int(duration)}s):*"
-        send_telegram(f"{prefix}\n\n{clean_msg}", pane_id)
+        send_telegram(f"{prefix}\n\n{clean_msg}", pane_id, mode="ask" if needs_human else "stop")
 
     print("{}")
 
