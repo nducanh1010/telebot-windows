@@ -108,6 +108,39 @@ def is_screen_locked():
     return False
 
 
+def get_user_idle_seconds():
+    """
+    Trả về số giây tính từ lần cuối người dùng chạm vào chuột hoặc bàn phím trên PC.
+    Dùng để tự động nhả Hook chờ của IDE ngay khoảnh khắc người dùng chạm vào chuột/phím PC.
+    """
+    try:
+        if IS_MAC:
+            out = subprocess.check_output(
+                ["ioreg", "-c", "IOHIDSystem", "-d", "4"],
+                stdin=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+            m = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', out)
+            if m:
+                return int(m.group(1)) / 1e9
+        elif IS_WINDOWS:
+            import ctypes
+
+            class LASTINPUTINFO(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+            lii = LASTINPUTINFO()
+            lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+            if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+                millis = (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF
+                return millis / 1000.0
+    except Exception:
+        pass
+    return 999.0
+
+
 def is_in_tmux_session():
     return bool(os.environ.get("TMUX_PANE")) and has_tmux()
 
@@ -310,26 +343,42 @@ def wait_for_ide_telegram_reply(safe_pane, transcript_path, timeout_sec=580):
     """
     Khi chạy trên IDE (ngoài tmux) và đã gửi thông báo sang Telegram,
     chờ phản hồi từ hộp thư IDE nếu người dùng nhắn lại qua Telegram.
+    Đặc biệt: Tự động nhả IDE ngay lập tức (trong 0.5s) khi phát hiện người dùng
+    chạm vào chuột hoặc bàn phím trên PC (HIDIdleTime < 0.8s)!
     """
     inbox_file = os.path.join(STATE_DIR, f"ide_inbox_{safe_pane}.txt")
     release_file = os.path.join(STATE_DIR, "ide_release.flag")
     tg_flag_file = os.path.join(STATE_DIR, f"waiting_{safe_pane}.flag")
 
-    # Xóa cờ release cũ trước khi bắt đầu vòng chờ mới
     if os.path.exists(release_file):
         try:
             os.remove(release_file)
         except OSError:
             pass
 
-    deadline = time.time() + timeout_sec
+    start_wait = time.time()
+    deadline = start_wait + timeout_sec
     while time.time() < deadline:
+        # 1. Nếu bấm nút Nhả IDE trên Telegram
         if os.path.exists(release_file):
             try:
                 os.remove(release_file)
             except OSError:
                 pass
             break
+
+        # 2. Sau 3.5 giây ân hạn ban đầu, nếu người dùng chạm vào chuột hoặc bàn phím PC
+        # (khi màn hình PC không khóa), tự động nhả IDE ngay lập tức để gõ trên IDE không phải chờ!
+        if time.time() - start_wait > 3.5 and not is_screen_locked():
+            if get_user_idle_seconds() < 0.8:
+                if os.path.exists(AWAY_FLAG_FILE):
+                    try:
+                        os.remove(AWAY_FLAG_FILE)
+                    except OSError:
+                        pass
+                break
+
+        # 3. Nếu có tin nhắn trả lời từ Telegram gửi vào hộp thư IDE
         if os.path.exists(inbox_file):
             try:
                 with open(inbox_file, "r", encoding="utf-8") as f:
@@ -345,7 +394,7 @@ def wait_for_ide_telegram_reply(safe_pane, transcript_path, timeout_sec=580):
                     return {"decision": "continue", "reason": f"User replied via Telegram: {reply}"}
             except Exception:
                 break
-        time.sleep(1.0)
+        time.sleep(0.5)
     return {}
 
 
