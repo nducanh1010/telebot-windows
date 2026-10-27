@@ -168,6 +168,15 @@ def list_ide_targets():
                 elif "/Applications/Claude.app/Contents/MacOS/Claude" in line and "Helper" not in line:
                     label = "ide:claude-app"
                     found[label] = f"{label} | Claude App | /Applications/Claude.app"
+                elif "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" in line and "Helper" not in line:
+                    label = "ide:codex-app"
+                    found[label] = f"{label} | ChatGPT (Codex) | /Applications/ChatGPT.app"
+                elif "/Applications/Codex.app/Contents/MacOS/Codex" in line and "Helper" not in line:
+                    label = "ide:codex-app"
+                    found[label] = f"{label} | Codex App | /Applications/Codex.app"
+                elif "/Applications/Cursor.app/Contents/MacOS/Cursor" in line and "Helper" not in line:
+                    label = "ide:cursor-app"
+                    found[label] = f"{label} | Cursor IDE | /Applications/Cursor.app"
         except Exception:
             pass
 

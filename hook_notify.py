@@ -347,6 +347,11 @@ def wait_for_ide_telegram_reply(safe_pane, transcript_path, timeout_sec=580):
     chạm vào chuột hoặc bàn phím trên PC (HIDIdleTime < 0.8s)!
     """
     inbox_file = os.path.join(STATE_DIR, f"ide_inbox_{safe_pane}.txt")
+    fallback_inboxes = [inbox_file]
+    if ".codex" in transcript_path.lower():
+        fallback_inboxes.append(os.path.join(STATE_DIR, "ide_inbox_ide_codex-app.txt"))
+    elif ".claude" in transcript_path.lower():
+        fallback_inboxes.append(os.path.join(STATE_DIR, "ide_inbox_ide_claude-app.txt"))
     release_file = os.path.join(STATE_DIR, "ide_release.flag")
     tg_flag_file = os.path.join(STATE_DIR, f"waiting_{safe_pane}.flag")
 
@@ -367,12 +372,13 @@ def wait_for_ide_telegram_reply(safe_pane, transcript_path, timeout_sec=580):
                 pass
             break
 
-        # 3. Nếu có tin nhắn trả lời từ Telegram gửi vào hộp thư IDE
-        if os.path.exists(inbox_file):
+        # 2. Nếu có tin nhắn trả lời từ Telegram gửi vào hộp thư IDE
+        matched_inbox = next((p for p in fallback_inboxes if os.path.exists(p)), None)
+        if matched_inbox:
             try:
-                with open(inbox_file, "r", encoding="utf-8") as f:
+                with open(matched_inbox, "r", encoding="utf-8") as f:
                     reply = f.read().strip()
-                os.remove(inbox_file)
+                os.remove(matched_inbox)
                 if reply:
                     # Đánh dấu để lượt trả lời tiếp theo của IDE cũng tự động gửi về Telegram
                     with open(tg_flag_file, "w", encoding="utf-8") as wf:
