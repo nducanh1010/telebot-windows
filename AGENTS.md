@@ -73,6 +73,6 @@ should_notify = from_telegram OR (is_away AND (needs_human OR is_long_task OR is
    - Dùng `text.lstrip().startswith(...)` thay vì `in text` để tránh việc AI nhắc đến tên nhãn ở giữa câu giải thích cũng kích hoạt gửi Telegram nhầm.
 5. **Đọc `transcript_full.jsonl` trên Antigravity (`agy`)**:
    - File `transcript.jsonl` của `agy` cắt ngắn các câu trả lời dài. Luôn ưu tiên kiểm tra và đọc `transcript_full.jsonl` cùng thư mục nếu tồn tại.
-6. **Tự động nhả `Working` trên IDE ngay khi chạm chuột/bàn phím PC (`get_user_idle_seconds`)**:
-   - Trên IDE (ngoài `tmux`), để nhận được tin nhắn trả lời từ Telegram, Hook `Stop` phải giữ vòng lặp chờ (`wait_for_ide_telegram_reply`). Trong thời gian đó, giao diện IDE sẽ hiển thị trạng thái `Working`.
-   - Để người dùng không bao giờ bị vướng khi quay lại dùng IDE trên PC: mỗi `0.5s`, vòng lặp kiểm tra `HIDIdleTime` (`ioreg -c IOHIDSystem` trên macOS / `GetLastInputInfo` trên Windows). Ngay khoảnh khắc người dùng lắc chuột hoặc chạm phím trên PC (`idle < 0.8s`), Hook tự động thoát ngay lập tức (`Working` biến mất trong chưa đầy nửa giây).
+6. **Không bao giờ giữ vòng lặp chờ trong Hook (`Stop`)**:
+   - Mọi Hook (`start`, `ask`, `stop`) phải thực thi xong và thoát ngay lập tức (`print("{}")`). Tuyệt đối không dùng vòng lặp chờ (`wait_for_ide_telegram_reply`) trong `Stop` hook vì sẽ làm treo Terminal chạy ngoài `tmux` và giữ trạng thái `Working` trên IDE.
+   - Xem chi tiết luồng nghiệp vụ và lộ trình nâng cấp tại `FLOW_NGHIEP_VU_VA_KE_HOACH.md`.

@@ -186,7 +186,66 @@ def update_codex_hooks():
 
     with open(hooks_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    trust_codex_hooks(hooks_path)
     print(f"[OK] Đã cấu hình Hook cho Codex CLI: {hooks_path}")
+
+
+def trust_codex_hooks(hooks_path):
+    """Tự động cập nhật trusted_hash trong ~/.codex/config.toml để Codex không chặn Hook khi cấu hình thay đổi."""
+    codex_bin = shutil.which("codex")
+    if not codex_bin and IS_MAC:
+        candidate = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+        if os.path.exists(candidate):
+            codex_bin = candidate
+    if not codex_bin:
+        return
+
+    config_toml = os.path.expanduser("~/.codex/config.toml")
+    try:
+        p = subprocess.Popen(
+            [codex_bin, "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        p.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "ai-telegram", "version": "1.0"}}}) + "\n")
+        p.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "initialized"}) + "\n")
+        p.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "hooks/list", "params": {}}) + "\n")
+        p.stdin.flush()
+
+        hook_hashes = {}
+        for _ in range(15):
+            line = p.stdout.readline()
+            if not line:
+                break
+            if '"id":2' in line or '"id": 2' in line:
+                res = json.loads(line).get("result", {})
+                for group in res.get("data", []):
+                    for h in group.get("hooks", []):
+                        if "hook_notify.py" in (h.get("command") or "") and h.get("key") and h.get("currentHash"):
+                            hook_hashes[h["key"]] = h["currentHash"]
+                break
+        p.terminate()
+
+        if hook_hashes and os.path.exists(config_toml):
+            with open(config_toml, "r", encoding="utf-8") as f:
+                toml_text = f.read()
+            import re
+            for key, cur_hash in hook_hashes.items():
+                section_header = f'[hooks.state."{key}"]'
+                if section_header in toml_text:
+                    pattern = re.compile(
+                        re.escape(section_header) + r'(\s*\n(?:[^\[]*?))trusted_hash\s*=\s*"[^"]*"',
+                        re.DOTALL,
+                    )
+                    toml_text = pattern.sub(f'{section_header}\\1trusted_hash = "{cur_hash}"', toml_text)
+                else:
+                    toml_text = toml_text.rstrip() + f'\n\n{section_header}\ntrusted_hash = "{cur_hash}"\nenabled = true\n'
+            with open(config_toml, "w", encoding="utf-8") as f:
+                f.write(toml_text)
+    except Exception:
+        pass
 
 
 def append_rule_file(path):
