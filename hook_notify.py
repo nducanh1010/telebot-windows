@@ -11,7 +11,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -293,9 +293,21 @@ def send_telegram(text, pane_id, mode="stop"):
                 payload["parse_mode"] = "Markdown"
             try:
                 req = urllib.request.Request(url, data=urllib.parse.urlencode(payload).encode("utf-8"))
-                urllib.request.urlopen(req, timeout=10)
+                urllib.request.urlopen(req, timeout=12)
                 break
-            except Exception:
+            except Exception as e:
+                if not use_md:
+                    # Fallback cuối cùng: bỏ reply_markup nếu có lỗi format button và ghi log
+                    try:
+                        payload.pop("reply_markup", None)
+                        req2 = urllib.request.Request(url, data=urllib.parse.urlencode(payload).encode("utf-8"))
+                        urllib.request.urlopen(req2, timeout=12)
+                    except Exception as e2:
+                        try:
+                            with open(os.path.join(BASE_DIR, "daemon.err.log"), "a", encoding="utf-8") as ef:
+                                ef.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] send_telegram error ({pane_id}): {e} | {e2}\n")
+                        except Exception:
+                            pass
                 continue
 
 
@@ -321,16 +333,24 @@ def extract_last_turn(transcript_path):
 
     last_user = ""
     last_text = ""
+    turn_responses = []
     try:
         with open(transcript_path, "r", encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
                     continue
                 obj = json.loads(line)
-                if obj.get("type") == "USER_INPUT" and obj.get("content"):
+                step_type = obj.get("type")
+                if step_type == "USER_INPUT" and obj.get("content"):
                     last_user = extract_user_request_tag(obj["content"])
-                elif obj.get("type") == "PLANNER_RESPONSE" and obj.get("content"):
-                    last_text = obj["content"]
+                    turn_responses = []
+                elif step_type == "SYSTEM_MESSAGE":
+                    turn_responses = []
+                elif step_type == "PLANNER_RESPONSE" and obj.get("content"):
+                    c_text = obj["content"].strip()
+                    if c_text:
+                        turn_responses.append(c_text)
+                        last_text = c_text
                 elif obj.get("type") == "user" and isinstance(obj.get("message"), dict):
                     content = obj["message"].get("content", "")
                     if isinstance(content, str) and content.strip():
@@ -376,6 +396,15 @@ def extract_last_turn(transcript_path):
                             last_text = "\n".join(texts)
     except Exception:
         pass
+    if turn_responses:
+        any_tagged = any(has_notify_tag(r) for r in turn_responses)
+        if len(turn_responses) == 1:
+            last_text = turn_responses[0]
+        else:
+            # Nếu trong cùng 1 lượt có bước chính (dài hoặc có [TG_NOTIFY]) rồi bước cuối đặt timer ngắn, gộp lại để không mất nội dung và nhãn
+            cleaned_parts = [r.replace(NOTIFY_TAG, "").strip() for r in turn_responses if r.replace(NOTIFY_TAG, "").strip()]
+            merged = "\n\n".join(cleaned_parts)
+            last_text = f"{NOTIFY_TAG}\n{merged}" if any_tagged else merged
     return last_user.strip(), last_text.strip()
 
 
@@ -474,8 +503,15 @@ def main():
 
     user_input_payload = payload.get("lastUserInput") or payload.get("prompt") or ""
 
+    pane_dispatch_file = os.path.join(STATE_DIR, f"from_tg_dispatch_{safe_pane}.flag")
+
     # 1. Sự kiện bắt đầu lượt chạy (PreInvocation / UserPromptSubmit)
     if event == "start":
+        # Trên Antigravity (agy), PreInvocation chạy lại ở MỌI bước gọi tool (invocationNum = 1, 2, 3...) trong cùng 1 lượt.
+        # Kiểm tra xem đây là bước đầu tiên của lượt mới hay chỉ là bước gọi tool tiếp theo giữa lượt.
+        inv_num = payload.get("invocationNum", 1)
+        is_continuation_step = (isinstance(inv_num, int) and inv_num > 1) or os.path.exists(timer_file)
+
         if not os.path.exists(timer_file):
             with open(timer_file, "w", encoding="utf-8") as f:
                 f.write(str(time.time()))
@@ -490,24 +526,21 @@ def main():
             except Exception:
                 ack_data = {}
 
-        dispatched_from_tg = ack_data is not None
-        if os.path.exists(FROM_TG_DISPATCH_FILE):
-            try:
-                with open(FROM_TG_DISPATCH_FILE, "r", encoding="utf-8") as f:
-                    ts = float(f.read().strip())
-                if time.time() - ts < 15.0:
-                    dispatched_from_tg = True
-                os.remove(FROM_TG_DISPATCH_FILE)
-            except Exception:
-                pass
-
-        if not dispatched_from_tg:
-            # Người dùng vừa gõ lệnh trực tiếp trên cửa sổ này -> Xóa cờ waiting cũ (nếu bị kẹt) và tắt away_mode thủ công
-            if os.path.exists(tg_flag_file):
+        dispatched_from_tg = (ack_data is not None) or os.path.exists(tg_flag_file)
+        for dfile in (pane_dispatch_file, FROM_TG_DISPATCH_FILE):
+            if os.path.exists(dfile):
                 try:
-                    os.remove(tg_flag_file)
-                except OSError:
+                    with open(dfile, "r", encoding="utf-8") as f:
+                        ts = float(f.read().strip())
+                    if time.time() - ts < 30.0:
+                        dispatched_from_tg = True
+                    os.remove(dfile)
+                except Exception:
                     pass
+
+        # CHỈ tắt away_mode khi đây là LƯỢT MỚI (không phải bước tool giữa lượt) VÀ do người dùng gõ trực tiếp trên PC
+        # TUYỆT ĐỐI KHÔNG BAO GIỜ xóa tg_flag_file (waiting_*.flag) tại start hook!
+        if not is_continuation_step and not dispatched_from_tg:
             if os.path.exists(AWAY_FLAG_FILE):
                 try:
                     os.remove(AWAY_FLAG_FILE)
@@ -589,19 +622,36 @@ def main():
             pass
 
     ack_pending_file = os.path.join(STATE_DIR, f"ack_pending_{safe_pane}.json")
-    from_telegram = os.path.exists(tg_flag_file) or explicit_tg_prompt
-    if os.path.exists(tg_flag_file) and not os.path.exists(ack_pending_file):
+    fully_idle = payload.get("fullyIdle", True)
+    has_valid_tg_flag = False
+
+    if os.path.exists(tg_flag_file):
         try:
             with open(tg_flag_file, "r", encoding="utf-8") as f:
                 raw_cnt = f.read().strip()
-            cnt = int(raw_cnt) if raw_cnt.isdigit() else 1
-            if cnt > 1:
-                with open(tg_flag_file, "w", encoding="utf-8") as f:
-                    f.write(str(cnt - 1))
+            if raw_cnt.startswith("followup:"):
+                fts = float(raw_cnt.split(":", 1)[1])
+                if time.time() - fts < 120.0:
+                    has_valid_tg_flag = True
+                if not os.path.exists(ack_pending_file):
+                    os.remove(tg_flag_file)
             else:
-                os.remove(tg_flag_file)
+                has_valid_tg_flag = True
+                cnt = int(raw_cnt) if raw_cnt.isdigit() else 1
+                if not os.path.exists(ack_pending_file):
+                    if cnt > 1:
+                        with open(tg_flag_file, "w", encoding="utf-8") as f:
+                            f.write(str(cnt - 1))
+                    elif fully_idle is False:
+                        # Lệnh chạy nền (WaitMsBeforeAsync) chưa xong hẳn -> Giữ followup 120s để gửi nốt kết quả cuối khi task nền xong
+                        with open(tg_flag_file, "w", encoding="utf-8") as f:
+                            f.write(f"followup:{int(time.time())}")
+                    else:
+                        os.remove(tg_flag_file)
         except OSError:
             pass
+
+    from_telegram = has_valid_tg_flag or explicit_tg_prompt
 
     is_away = is_away_mode( None, pane_id)
     tagged_notify = has_notify_tag(last_msg)
@@ -609,7 +659,9 @@ def main():
     is_error = (event == "stop_failure") or (term_reason in ("ERROR", "MAX_INVOCATIONS", "MAX_TOKEN_BUDGET_EXCEEDED"))
     is_long_task = duration >= cfg.get("min_duration_seconds", 180)
 
-    should_notify = from_telegram or (is_away and (tagged_notify or is_error or is_long_task))
+    # Khi câu trả lời đến từ Telegram, HOẶC có gắn nhãn [TG_NOTIFY] trên tmux, HOẶC bị lỗi dừng -> LUÔN LUÔN gửi về Telegram!
+    # Chế độ is_away chỉ dùng để tự động báo thêm các task thường chạy lâu (>= min_duration_seconds).
+    should_notify = from_telegram or tagged_notify or is_error or (is_away and is_long_task)
 
     if should_notify:
         sync_active_pane_if_tmux(pane_id)

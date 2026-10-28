@@ -1,4 +1,4 @@
-# Tài liệu Luồng Nghiệp Vụ & Kế Hoạch Nâng Cấp (`ai-telegram` — `v1.5.0`)
+# Tài liệu Luồng Nghiệp Vụ & Kế Hoạch Nâng Cấp (`ai-telegram` — `v1.5.1`)
 
 Tài liệu này tổng hợp **luồng nghiệp vụ chuẩn (Core Business Flows)** đã được triển khai thực tế tới phiên bản **`v1.4.0`** và **lộ trình các hạng mục nâng cấp** cho hệ thống cầu nối điều khiển AI qua Telegram (`agy`, `claude`, `codex`).
 
@@ -107,4 +107,5 @@ hoặc gõ kèm 'tg'?"}
 | **Quota Monitor** | Phát hiện `Usage limit reached` trên `tmux` + Báo ngay khi hết Quota & khi Reset Quota chạy lại | `v1.4.0` | ✅ Đã hoàn thành |
 | **Interactive Prompt & Smart Queue** | Tự động bắt bảng hỏi (`1/2/3`, `y/n`), Hàng đợi thông minh khi AI đang bận (`queue_<pane>.json`), Trạng thái sống trong `/list` & Dọn rác `state/` | `v1.4.0` | ✅ Đã hoàn thành |
 | **Clean Screen Output** | Bộ lọc `clean_tmux_screen` rút gọn vạch kẻ 200 ký tự, khoảng trắng thừa status bar & rác TUI khi chụp `/screen` | `v1.5.0` | ✅ Đã hoàn thành |
+| **Zero-Drop Reliability** | Fix `PreInvocation` multi-step mất cờ `waiting`, luôn gửi khi có `[TG_NOTIFY]`, gộp `PLANNER_RESPONSE` cùng lượt, và giữ `followup:120s` khi `fullyIdle=False` | `v1.5.1` | ✅ Đã hoàn thành |
 | **P4** | *(Tùy chọn)* Module AppleScript độc lập cho Desktop GUI (`ChatGPT.app`, `Claude.app`) | Tương lai | ⏸ Chưa cần thiết (ưu tiên dùng `tmux`) |

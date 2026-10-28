@@ -10,7 +10,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -448,7 +448,7 @@ def increment_waiting_count(safe_pane, is_busy=False):
         try:
             with open(wfile, "r", encoding="utf-8") as f:
                 val = f.read().strip()
-            count = int(val) if val.isdigit() else 1
+            count = 0 if val.startswith("followup:") else (int(val) if val.isdigit() else 1)
         except Exception:
             count = 1
     elif is_busy:
@@ -553,6 +553,8 @@ def send_to_target(pane, text, mark_waiting=True, is_special_key=False):
         is_busy_now = get_pane_live_status(pane).startswith("⚙️ Đang thực thi")
         increment_waiting_count(safe, is_busy=is_busy_now)
         with open(FROM_TG_DISPATCH_FILE, "w", encoding="utf-8") as f:
+            f.write(str(now_ts))
+        with open(os.path.join(STATE_DIR, f"from_tg_dispatch_{safe}.flag"), "w", encoding="utf-8") as f:
             f.write(str(now_ts))
         if not is_special_key and not is_busy_now:
             ack_file = os.path.join(STATE_DIR, f"ack_pending_{safe}.json")

@@ -111,3 +111,10 @@ should_notify = from_telegram OR (is_away AND (needs_human OR is_long_task OR is
   - `suppress_when_tmux_active` (bool, mặc định `true`): Tự động tắt báo trùng lên Telegram cho phiên `tmux` đang có người gõ trực tiếp (SSH/Terminal) trong 5 phút qua.
 
 - `clean_tmux_screen(raw_text)` tự động cắt gọn các đường kẻ `────────` dài 200 ký tự, khoảng trắng thừa trên thanh status bar, `(ctrl+o to expand)` và nội dung `Thought` nội bộ để hiển thị gọn đẹp trên màn hình điện thoại.
+
+### 13. 5 Chốt chặn chống rớt tin nhắn Telegram & `[TG_NOTIFY]` (`v1.5.1`)
+1. **Không bao giờ xóa `waiting_<pane>.flag` tại `start` hook**: Trên `agy`, `PreInvocation` chạy lại ở mỗi bước gọi tool (`invocationNum = 1, 2, 3...`). Nếu xóa `waiting_<pane>.flag` hoặc `away_mode.flag` ở bước thứ 2 sẽ làm mất cờ khi `Stop` hook chạy. Chỉ `Stop` hook mới được tiêu thụ `waiting_<pane>.flag`.
+2. **Luôn gửi khi có `[TG_NOTIFY]` (`tagged_notify`) hoặc `is_error`**: Công thức `should_notify = from_telegram or tagged_notify or is_error or (is_away and is_long_task)` đảm bảo mọi bản tin có `[TG_NOTIFY]` trên `tmux` luôn gửi về Telegram bất kể trạng thái `is_away`.
+3. **Gộp các `PLANNER_RESPONSE` trong cùng lượt (`extract_last_turn`)**: Không để câu thông báo đặt hẹn giờ ngắn ở bước cuối ghi đè mất báo cáo `[TG_NOTIFY]` ở bước trước trong cùng 1 lượt.
+4. **Giữ cờ `followup:<ts>` (120s) khi `fullyIdle == False`**: Khi lệnh `run_command` chuyển sang chạy nền (`WaitMsBeforeAsync`), `Stop` lần 1 chuyển cờ thành `followup:<ts>` để khi lệnh nền chạy xong vài giây sau, `Stop` lần 2 vẫn gửi kết quả cuối cùng về Telegram.
+5. **Tách riêng `from_tg_dispatch_<safe_pane>.flag` theo từng cửa sổ** và bổ sung fallback gửi không kèm `reply_markup` + log vào `daemon.err.log`.
