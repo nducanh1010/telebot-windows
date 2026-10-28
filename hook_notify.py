@@ -11,7 +11,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
