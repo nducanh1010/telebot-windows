@@ -156,8 +156,9 @@ def is_screen_locked(pane_id=""):
 
 def get_session_label(payload):
     """
-    P1: Chỉ gắn nhãn phiên tmux khi thực sự chạy trong tmux (có biến TMUX_PANE).
-    Nếu chạy ở Terminal ngoài tmux, gắn nhãn 'term:<folder>' để không bao giờ nhận nhầm cửa sổ tmux khác.
+    Lấy mã phiên tmux (#S:#I.#P):
+    1. Ưu tiên đọc từ biến môi trường TMUX_PANE.
+    2. Nếu server AI khởi động lại mất biến TMUX_PANE, dò trong tmux list-panes theo thư mục cwd và tiến trình AI.
     """
     if is_in_tmux_session():
         pane = os.environ.get("TMUX_PANE", "")
@@ -165,8 +166,16 @@ def get_session_label(payload):
         if out:
             return out
     workspaces = payload.get("workspacePaths") or []
-    cwd = workspaces[0] if workspaces else (payload.get("cwd") or os.getcwd())
-    folder = os.path.basename(os.path.normpath(cwd)) or "terminal"
+    cwd = os.path.normpath(workspaces[0] if workspaces else (payload.get("cwd") or os.getcwd()))
+    if has_tmux():
+        out = run_tmux(["list-panes", "-a", "-F", "#S:#I.#P | #{pane_current_command} | #{pane_current_path}"])
+        for line in out.splitlines():
+            parts = [p.strip() for p in line.split(" | ")]
+            if len(parts) >= 3 and os.path.normpath(parts[2]) == cwd:
+                cmd_l = parts[1].lower()
+                if any(k in cmd_l for k in ("agy", "claude", "codex")) or re.match(r"^\d+\.\d+\.\d+$", cmd_l):
+                    return parts[0]
+    folder = os.path.basename(cwd) or "terminal"
     if IS_WINDOWS and not has_tmux():
         return f"{platform.node()}:{folder}"
     return f"term:{folder}"
@@ -224,20 +233,32 @@ def get_context_meta(payload):
 
 def build_inline_buttons(pane_id, mode="stop"):
     """
-    P2: Hiển thị nút bấm theo đúng ngữ cảnh:
+    P2: Hiển thị nút bấm theo đúng ngữ cảnh (kèm nút [💬 Trả lời] gửi về đúng cửa sổ của tin nhắn đó):
     - mode == 'ack': Khi Hook xác nhận đã nhận lệnh từ Telegram trước khi thực thi.
-    - mode == 'ask': Hiện đầy đủ Yes / No / Enter / Màn hình / Chọn cửa sổ khi AI thực sự hỏi xác nhận.
-    - mode == 'stop': Chỉ hiện Xem màn hình & Chọn cửa sổ (không hiện Yes/No gây hiểu nhầm).
+    - mode == 'ask': Hiện đầy đủ Yes / No / Enter + Trả lời / Chọn cửa sổ / Xem màn hình.
+    - mode == 'stop': Hiện Trả lời / Chọn cửa sổ / Xem màn hình / Đổi cửa sổ.
     """
     is_tmux_pane = not pane_id.startswith("term:")
     if mode == "ack":
-        row = [
-            {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"},
-            {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
-        ]
         if is_tmux_pane:
-            row.insert(1, {"text": "⏹ Hủy lệnh (Esc)", "callback_data": f"key:{pane_id}:Escape"})
-        return {"inline_keyboard": [row]}
+            return {
+                "inline_keyboard": [
+                    [
+                        {"text": "💬 Trả lời", "callback_data": f"reply:{pane_id}"},
+                        {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"},
+                    ],
+                    [
+                        {"text": "⏹ Hủy lệnh (Esc)", "callback_data": f"key:{pane_id}:Escape"},
+                        {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
+                    ],
+                ]
+            }
+        return {
+            "inline_keyboard": [[
+                {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"},
+                {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
+            ]]
+        }
 
     if mode == "ask":
         rows = [
@@ -246,23 +267,30 @@ def build_inline_buttons(pane_id, mode="stop"):
                 {"text": "❌ No (n)", "callback_data": f"key:{pane_id}:n"},
                 {"text": "⏎ Enter", "callback_data": f"key:{pane_id}:Enter"},
             ],
-            [
-                {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"},
-                {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
-            ],
         ]
         if is_tmux_pane:
-            rows[1].insert(0, {"text": f"🎯 Chọn {pane_id}", "callback_data": f"use:{pane_id}"})
+            rows.append([
+                {"text": "💬 Trả lời", "callback_data": f"reply:{pane_id}"},
+                {"text": f"🎯 Chọn {pane_id}", "callback_data": f"use:{pane_id}"},
+            ])
+        rows.append([
+            {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"},
+            {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
+        ])
         return {"inline_keyboard": rows}
 
     # mode == "stop"
-    row = [
+    rows = []
+    if is_tmux_pane:
+        rows.append([
+            {"text": "💬 Trả lời", "callback_data": f"reply:{pane_id}"},
+            {"text": f"🎯 Chọn {pane_id}", "callback_data": f"use:{pane_id}"},
+        ])
+    rows.append([
         {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane_id}"},
         {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
-    ]
-    if is_tmux_pane:
-        row.insert(0, {"text": f"🎯 Chọn {pane_id}", "callback_data": f"use:{pane_id}"})
-    return {"inline_keyboard": [row]}
+    ])
+    return {"inline_keyboard": rows}
 
 
 def send_telegram(text, pane_id, mode="stop"):

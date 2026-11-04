@@ -1,4 +1,4 @@
-# Tài liệu Luồng Nghiệp Vụ & Kế Hoạch Nâng Cấp (`ai-telegram` — `v1.5.1`)
+# Tài liệu Luồng Nghiệp Vụ & Kế Hoạch Nâng Cấp (`ai-telegram` — `v1.6.0`)
 
 Tài liệu này tổng hợp **luồng nghiệp vụ chuẩn (Core Business Flows)** đã được triển khai thực tế tới phiên bản **`v1.4.0`** và **lộ trình các hạng mục nâng cấp** cho hệ thống cầu nối điều khiển AI qua Telegram (`agy`, `claude`, `codex`).
 
@@ -17,7 +17,7 @@ Tài liệu này tổng hợp **luồng nghiệp vụ chuẩn (Core Business Flo
    - Khi bạn đã chọn cửa sổ **A**, `active_pane.txt` **luôn giữ cố định là A** (không bao giờ tự động nhảy sang **B** khi **B** bắn thông báo chen ngang).
    - Khi **B** báo tin về mà đang chọn **A** (`B != A`), cuối tin nhắn của **B** hiển thị dòng nhắc:
      `📌 Đang chọn mặc định: A — Hãy Reply tin nhắn này hoặc bấm 🎯 Chọn B nếu muốn gửi lệnh vào B.`
-   - Nếu bạn **vuốt trả lời (`Reply`)** trực tiếp vào bất kỳ tin nhắn nào của **B** trên Telegram, Daemon tự trích xuất tên cửa sổ `[B]` từ tiêu đề tin nhắn được Reply để gửi riêng câu trả lời đó vào **B** mà vẫn giữ **A** làm mặc định.
+   - Nếu bạn bấm nút **`[💬 Trả lời]`** dưới tin nhắn của **B** (hoặc **vuốt trả lời `Reply`** trực tiếp vào tin nhắn của **B**), Daemon tự trích xuất tên cửa sổ `[B]` từ tiêu đề tin nhắn được Reply để gửi riêng câu trả lời đó vào **B** mà vẫn giữ **A** làm mặc định.
 4. **Phân biệt rõ `📋 Báo cáo tổng kết` và `🙋‍♂️ Cần chốt phương án / nghiệp vụ`**:
    - Khi AI gắn nhãn thông báo ở đầu câu để báo cáo hoàn thành cột mốc (không có câu hỏi xin ý kiến ở cuối bài), hệ thống hiển thị **`📋 Báo cáo tổng kết (<thời_gian>s):`** và chỉ hiện nút `[🎯 Chọn cửa sổ]`, `[📸 Xem màn hình]` (không hiện nút `Yes / No`).
    - Chỉ khi AI thực sự đặt câu hỏi hoặc yêu cầu chọn phương án ở đoạn kết (`is_really_asking_decision`), hệ thống mới hiển thị **`🙋‍♂️ Cần chốt phương án / nghiệp vụ:`** kèm các nút `[✅ Yes (y)] [❌ No (n)] [⏎ Enter]`.
@@ -107,5 +107,5 @@ hoặc gõ kèm 'tg'?"}
 | **Quota Monitor** | Phát hiện `Usage limit reached` trên `tmux` + Báo ngay khi hết Quota & khi Reset Quota chạy lại | `v1.4.0` | ✅ Đã hoàn thành |
 | **Interactive Prompt & Smart Queue** | Tự động bắt bảng hỏi (`1/2/3`, `y/n`), Hàng đợi thông minh khi AI đang bận (`queue_<pane>.json`), Trạng thái sống trong `/list` & Dọn rác `state/` | `v1.4.0` | ✅ Đã hoàn thành |
 | **Clean Screen Output** | Bộ lọc `clean_tmux_screen` rút gọn vạch kẻ 200 ký tự, khoảng trắng thừa status bar & rác TUI khi chụp `/screen` | `v1.5.0` | ✅ Đã hoàn thành |
-| **Zero-Drop Reliability** | Fix `PreInvocation` multi-step mất cờ `waiting`, luôn gửi khi có `[TG_NOTIFY]`, gộp `PLANNER_RESPONSE` cùng lượt, và giữ `followup:120s` khi `fullyIdle=False` | `v1.5.1` | ✅ Đã hoàn thành |
+| **Zero-Drop Reliability** | Fix `PreInvocation` multi-step mất cờ `waiting`, luôn gửi khi có `[TG_NOTIFY]`, gộp `PLANNER_RESPONSE` cùng lượt, và giữ `followup:120s` khi `fullyIdle=False` | `v1.6.0` | ✅ Đã hoàn thành |
 | **P4** | *(Tùy chọn)* Module AppleScript độc lập cho Desktop GUI (`ChatGPT.app`, `Claude.app`) | Tương lai | ⏸ Chưa cần thiết (ưu tiên dùng `tmux`) |

@@ -10,7 +10,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -316,19 +316,41 @@ def set_active_pane(pane):
         f.write(pane.strip())
 
 
+REPLY_NEXT_FILE = os.path.join(STATE_DIR, "reply_next_pane.json")
+
+
+def set_one_shot_reply_pane(pane):
+    with open(REPLY_NEXT_FILE, "w", encoding="utf-8") as f:
+        json.dump({"pane": pane.strip(), "ts": time.time()}, f, ensure_ascii=False)
+
+
+def consume_one_shot_reply_pane(max_age=300):
+    if not os.path.exists(REPLY_NEXT_FILE):
+        return ""
+    try:
+        with open(REPLY_NEXT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        os.remove(REPLY_NEXT_FILE)
+        if time.time() - float(data.get("ts", 0)) <= max_age:
+            return data.get("pane", "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def extract_reply_target_pane(msg):
     """
-    Khi người dùng vuốt Reply trực tiếp vào một tin nhắn của cửa sổ B trên Telegram,
-    trích xuất mã cửa sổ B từ tiêu đề '🖥 [B]' hoặc '📺 [B]' để gửi đúng vào B mà không làm mất cửa sổ A đang chọn.
+    Khi người dùng vuốt Reply trực tiếp vào một tin nhắn của cửa sổ B trên Telegram (hoặc sau khi bấm nút [💬 Trả lời]),
+    trích xuất mã cửa sổ B từ tiêu đề '🖥 [B]' / '📺 [B]' / '💬 [B]' để gửi đúng vào B mà không làm mất cửa sổ A đang chọn.
     """
     reply_msg = msg.get("reply_to_message")
-    if not isinstance(reply_msg, dict):
-        return ""
-    replied_text = reply_msg.get("text") or ""
-    m = re.search(r"(?:🖥|📺)\s*\*?\[([^\]]+)\]", replied_text)
-    if m:
-        return m.group(1).strip()
-    return ""
+    if isinstance(reply_msg, dict):
+        replied_text = reply_msg.get("text") or ""
+        m = re.search(r"(?:🖥|📺|💬)\s*\*?\[([^\]]+)\]", replied_text)
+        if m:
+            consume_one_shot_reply_pane()
+            return m.group(1).strip()
+    return consume_one_shot_reply_pane()
 
 
 def clean_tmux_screen(raw_text):
@@ -372,6 +394,7 @@ def capture_screen(pane):
         code, out, _ = run_tmux(["capture-pane", "-t", pane, "-p"])
         if code == 0 and out.strip():
             return clean_tmux_screen(out)
+        return f"⚠️ Cửa sổ `[{pane}]` không còn tồn tại hoặc đã đổi tên trong `tmux` (kiểm tra `/list`)."
 
     safe_pane = sanitize_filename(pane)
     for candidate in (
@@ -527,7 +550,7 @@ def send_list_menu(token, chat_id, current_pane):
         return
     lines = []
     buttons = []
-    for p in panes[:8]:
+    for p in panes[:20]:
         pid, label = format_pane_summary(p)
         live_st = get_pane_live_status(pid)
         marker = "🟢" if pid == current_pane else "⚪️"
@@ -932,8 +955,34 @@ def main():
                         tg_api(token, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Danh sách cửa sổ"})
                         send_list_menu(token, chat_id, get_active_pane())
 
+                    elif data.startswith("reply:"):
+                        _, pane = data.split(":", 1)
+                        valid_ids = [t.split(" | ")[0] for t in list_targets()]
+                        if valid_ids and pane not in valid_ids:
+                            tg_api(token, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": f"Cửa sổ {pane} không còn tồn tại"})
+                            tg_send(
+                                token,
+                                chat_id,
+                                f"⚠️ Cửa sổ `[{pane}]` không còn tồn tại (đã đóng hoặc đổi tên trong `tmux`).\n👉 Dưới đây là danh sách cửa sổ đang chạy:",
+                            )
+                            send_list_menu(token, chat_id, get_active_pane())
+                            continue
+                        set_one_shot_reply_pane(pane)
+                        tg_api(token, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": f"Trả lời vào {pane}"})
+                        tg_send(
+                            token,
+                            chat_id,
+                            f"💬 *[{pane}]* — Nhập nội dung bạn muốn gửi vào `{pane}`:",
+                            reply_markup={
+                                "force_reply": True,
+                                "selective": True,
+                                "input_field_placeholder": f"Gửi lệnh vào {pane}...",
+                            },
+                        )
+
                     elif data.startswith("use:"):
                         _, pane = data.split(":", 1)
+                        consume_one_shot_reply_pane()
                         set_active_pane(pane)
                         tg_api(token, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": f"Đã chọn {pane}"})
                         tg_send(token, chat_id, f"✅ Đã chuyển điều khiển sang: `{pane}`")
@@ -956,6 +1005,16 @@ def main():
                         chat_id,
                         f"⚠️ Cửa sổ `[{reply_pane}]` là Terminal thường chạy ngoài `tmux` nên không nhận được phím từ Telegram.\n👉 Cửa sổ đang chọn mặc định của bạn vẫn là `[{default_pane}]`.",
                     )
+                    continue
+
+                valid_ids = [t.split(" | ")[0] for t in list_targets()]
+                if reply_pane and valid_ids and reply_pane not in valid_ids:
+                    tg_send(
+                        token,
+                        chat_id,
+                        f"⚠️ Cửa sổ `[{reply_pane}]` trong tin nhắn cũ không còn tồn tại (đã đóng hoặc đổi tên trong `tmux`).\n👉 Cửa sổ đang chọn mặc định của bạn là `[{default_pane}]`.",
+                    )
+                    send_list_menu(token, chat_id, default_pane)
                     continue
 
                 if cmd_word in ("/start", "/help"):
@@ -1062,6 +1121,7 @@ def main():
                             f"⚙️ AI hiện đang thực thi lệnh trước, lệnh mới của bạn (`{text[:150]}`) đã vào hàng đợi (queue) và sẽ tự động thực thi ngay khi lệnh hiện tại hoàn tất.",
                             reply_markup={
                                 "inline_keyboard": [[
+                                    {"text": "💬 Trả lời", "callback_data": f"reply:{pane}"},
                                     {"text": "📸 Xem màn hình", "callback_data": f"screen:{pane}"},
                                     {"text": "📋 Đổi cửa sổ", "callback_data": "list"},
                                 ]]

@@ -118,3 +118,9 @@ should_notify = from_telegram OR (is_away AND (needs_human OR is_long_task OR is
 3. **Gộp các `PLANNER_RESPONSE` trong cùng lượt (`extract_last_turn`)**: Không để câu thông báo đặt hẹn giờ ngắn ở bước cuối ghi đè mất báo cáo `[TG_NOTIFY]` ở bước trước trong cùng 1 lượt.
 4. **Giữ cờ `followup:<ts>` (120s) khi `fullyIdle == False`**: Khi lệnh `run_command` chuyển sang chạy nền (`WaitMsBeforeAsync`), `Stop` lần 1 chuyển cờ thành `followup:<ts>` để khi lệnh nền chạy xong vài giây sau, `Stop` lần 2 vẫn gửi kết quả cuối cùng về Telegram.
 5. **Tách riêng `from_tg_dispatch_<safe_pane>.flag` theo từng cửa sổ** và bổ sung fallback gửi không kèm `reply_markup` + log vào `daemon.err.log`.
+
+### 14. Nút `[💬 Trả lời]` (`reply:<pane_id>`) & Tự động khôi phục nhãn `tmux` khi Server Restart (`v1.6.0`)
+- Mọi tin nhắn từ cửa sổ `tmux` (`ack`, `stop`, `ask`, `queued pong`) đều có nút **`[💬 Trả lời]`** (`reply:<pane_id>`) ở góc trái trên cùng.
+- Khi bấm **`[💬 Trả lời]`** vào tin nhắn của cửa sổ `X`, Daemon kiểm tra `X` còn tồn tại trong `tmux` không, lưu `state/reply_next_pane.json` (TTL 300s) và bật khung nhập `ForceReply` (`💬 [X] — Nhập nội dung bạn muốn gửi vào X:`) để tin nhắn tiếp theo đi thẳng vào `X` mà không làm thay đổi `active_pane.txt`.
+- Khi `agy` background server tự restart làm mất `TMUX_PANE` trong `os.environ`, `get_session_label()` tự đối chiếu `cwd` với `tmux list-panes` để giữ đúng tên cửa sổ `tmux` (thay vì rơi về `term:<folder>`).
+- Nâng giới hạn hiển thị `/list` từ 8 lên 20 cửa sổ.
