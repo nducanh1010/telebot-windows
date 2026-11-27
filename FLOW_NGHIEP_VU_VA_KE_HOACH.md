@@ -1,4 +1,4 @@
-# Tài liệu Luồng Nghiệp Vụ & Kế Hoạch Nâng Cấp (`ai-telegram` — `v1.6.0`)
+# Tài liệu Luồng Nghiệp Vụ & Kế Hoạch Nâng Cấp (`ai-telegram` — `v1.7.0`)
 
 Tài liệu này tổng hợp **luồng nghiệp vụ chuẩn (Core Business Flows)** đã được triển khai thực tế tới phiên bản **`v1.4.0`** và **lộ trình các hạng mục nâng cấp** cho hệ thống cầu nối điều khiển AI qua Telegram (`agy`, `claude`, `codex`).
 
@@ -108,4 +108,13 @@ hoặc gõ kèm 'tg'?"}
 | **Interactive Prompt & Smart Queue** | Tự động bắt bảng hỏi (`1/2/3`, `y/n`), Hàng đợi thông minh khi AI đang bận (`queue_<pane>.json`), Trạng thái sống trong `/list` & Dọn rác `state/` | `v1.4.0` | ✅ Đã hoàn thành |
 | **Clean Screen Output** | Bộ lọc `clean_tmux_screen` rút gọn vạch kẻ 200 ký tự, khoảng trắng thừa status bar & rác TUI khi chụp `/screen` | `v1.5.0` | ✅ Đã hoàn thành |
 | **Zero-Drop Reliability** | Fix `PreInvocation` multi-step mất cờ `waiting`, luôn gửi khi có `[TG_NOTIFY]`, gộp `PLANNER_RESPONSE` cùng lượt, và giữ `followup:120s` khi `fullyIdle=False` | `v1.6.0` | ✅ Đã hoàn thành |
+| **Multi-Mux Adapter** | Backend multiplexer đọc từ `config.json` (`multiplexer_bin`: `tmux` / `psmux` / ...), hỗ trợ biến pane `TMUX_PANE` **và** `PSMUX_PANE` | `v1.7.0` | ✅ Đã hoàn thành |
+| **Ảnh chụp cửa sổ thật** | `📸 Xem màn hình` gửi **ảnh PNG** của cửa sổ Windows (PrintWindow → fallback CopyFromScreen) qua `sendPhoto`; không cần `tmux` | `v1.7.0` | ✅ Đã hoàn thành |
+| **Đồng bộ định danh cửa sổ** | `resolve_window_pid()` ánh xạ `term:<folder>` / `<node>:<folder>` → PID cửa sổ Windows thật, dùng chung cho chụp ảnh & gõ phím | `v1.7.0` | ✅ Đã hoàn thành |
+| **Anti-Kẹt Daemon** | `offset` cập nhật **trước** khi xử lý update, bọc try/except theo từng update, `answerCallbackQuery` không bao giờ làm nổi exception, ghi log `daemon.log`/`daemon.err.log`, heartbeat + lệnh `/ping` | `v1.7.0` | ✅ Đã hoàn thành |
+| **Bật/Tắt & Tự Phục Hồi** | `install.py --enable/--disable/--start/--stop/--status`, script Startup giám sát tự khởi động lại daemon khi crash, file khóa `state/daemon.pid` chống chạy trùng | `v1.7.0` | ✅ Đã hoàn thành |
+| **Điều Khiển AI Trong IDE** | Gửi lệnh vào ô chat AI của IDE (Antigravity/VS Code/Cursor) bằng **UI Automation** (focus đúng ô nhập) + **từ chối dán mù** khi con trỏ đang ở trình soạn thảo | `v1.8.0` | ✅ Đã hoàn thành |
+| **Ẩn Cửa Sổ Console** | `CREATE_NO_WINDOW` cho mọi lệnh con, `tasklist` → Win32 API qua `ctypes`, hook chạy bằng `pythonw.exe`, script giám sát chỉ spawn khi heartbeat cũ | `v1.8.1` | ✅ Đã hoàn thành |
+| **Định Tuyến ID Cửa Sổ** | `is_mux_pane()` phân biệt pane multiplexer với PID cửa sổ Windows — không gửi PID vào multiplexer (lỗi làm lệnh rơi mất với `psmux`) | `v1.8.1` | ✅ Đã hoàn thành |
+| **Backend Paseo** | Điều khiển agent Paseo (`paseo ls --json` + `paseo send <agentId>`) từ Telegram; giữ nguyên đường Hook→Telegram vì agent chạy CLI thật; cờ state ghi dưới nhiều bí danh để Hook luôn tìm thấy | `v1.8.1` | ✅ Đã hoàn thành |
 | **P4** | *(Tùy chọn)* Module AppleScript độc lập cho Desktop GUI (`ChatGPT.app`, `Claude.app`) | Tương lai | ⏸ Chưa cần thiết (ưu tiên dùng `tmux`) |

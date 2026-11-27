@@ -4,5 +4,7 @@
   "min_duration_seconds": 180,
   "notify_on_screen_lock": true,
   "notify_on_away": true,
-  "suppress_when_tmux_active": true
+  "suppress_when_tmux_active": true,
+  "multiplexer_bin": "tmux",
+  "target_backend": "windows"
 }

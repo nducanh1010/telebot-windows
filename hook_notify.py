@@ -11,7 +11,20 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-VERSION = "1.5.1"
+try:
+    from net_compat import force_ipv4, with_retry
+    force_ipv4()
+except Exception:  # pragma: no cover
+    def force_ipv4():
+        return False
+
+    def with_retry(fn, attempts=3, delay=1.5, backoff=1.8):
+        try:
+            return True, fn()
+        except Exception as e:
+            return False, str(e)
+
+VERSION = "1.8.1"
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -29,28 +42,106 @@ NOTIFY_TAG = "[TG_" + "NOTIFY]"
 
 os.makedirs(STATE_DIR, exist_ok=True)
 
+# ============================================================================
+# MULTIPLEXER (tmux / psmux / ...) — binary đọc từ config.json "multiplexer_bin"
+# ============================================================================
+PANE_ENV_NAMES = ("TMUX_PANE", "PSMUX_PANE", "MUX_PANE")
+
+
+# Windows: tiến trình console con không được mở cửa sổ nhấp nháy (hook chạy từ IDE GUI)
+NO_WINDOW_FLAG = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if IS_WINDOWS else 0
+
+
+def run_hidden(cmd, **kwargs):
+    """subprocess.run() nhưng KHÔNG mở cửa sổ console trên Windows."""
+    kwargs.setdefault("stdin", subprocess.DEVNULL)
+    kwargs.setdefault("stdout", subprocess.PIPE)
+    kwargs.setdefault("stderr", subprocess.PIPE)
+    if IS_WINDOWS:
+        kwargs.setdefault("creationflags", NO_WINDOW_FLAG)
+    return subprocess.run(cmd, **kwargs)
+
+
+def get_mux_bin():
+    """Tên binary multiplexer do config.json chỉ định (mặc định 'tmux')."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return (cfg.get("multiplexer_bin") or "tmux").strip() or "tmux"
+    except Exception:
+        return "tmux"
+
+
+def find_mux_binary():
+    """Tìm binary multiplexer: trong PATH trước, sau đó trong thư mục WinGet (psmux)."""
+    name = get_mux_bin()
+    if os.path.isabs(name):
+        return name if os.path.exists(name) else ""
+    found = shutil.which(name)
+    if found:
+        return found
+    if IS_WINDOWS:
+        pkg_root = os.path.join(
+            os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Packages"
+        )
+        if os.path.isdir(pkg_root):
+            try:
+                for entry in os.listdir(pkg_root):
+                    if name.lower() not in entry.lower():
+                        continue
+                    base = os.path.join(pkg_root, entry)
+                    for root, _dirs, files in os.walk(base):
+                        for f in files:
+                            if f.lower() == (name.lower() + ".exe"):
+                                return os.path.join(root, f)
+            except Exception:
+                pass
+    return ""
+
 
 def has_tmux():
-    return shutil.which("tmux") is not None
+    """Có multiplexer nào khả dụng không (tmux / psmux / ...)."""
+    return find_mux_binary() != ""
+
+
+def is_real_tmux():
+    """Chỉ đúng khi đang dùng tmux thật (lệnh tmux-specific mới an toàn chạy)."""
+    return get_mux_bin() == "tmux"
+
+
+def get_pane_id_from_env():
+    """Lấy ID pane từ biến môi trường (TMUX_PANE cho tmux, PSMUX_PANE cho psmux)."""
+    for env_name in PANE_ENV_NAMES:
+        value = os.environ.get(env_name)
+        if value:
+            return value.strip()
+    return ""
 
 
 def is_in_tmux_session():
-    return bool(os.environ.get("TMUX_PANE")) and has_tmux()
+    """
+    Đang nằm trong một pane của multiplexer?
+    psmux đặt biến `TMUX_PANE` (dạng "%1") + `PSMUX_SESSION_NAME` bên trong pane
+    (tương thích tmux) — nên chỉ cần có biến là biết đang ở trong multiplexer,
+    KHÔNG cần multiplexer nằm trong PATH (hook do IDE gọi, PATH có thể khác).
+    """
+    return bool(get_pane_id_from_env())
 
 
 def run_tmux(args):
-    """Luôn dùng PIPE cho stdout/stderr để tránh lỗi treo libevent của tmux trên macOS/Linux."""
+    """
+    Luôn dùng PIPE cho stdout/stderr để tránh lỗi treo libevent của tmux trên macOS/Linux.
+    Trên Windows dùng CREATE_NO_WINDOW: hook được IDE (tiến trình GUI) gọi, nếu không có cờ này
+    mỗi lần hook chạy sẽ bật lên một cửa sổ console rồi tắt.
+    """
     try:
-        res = subprocess.run(
-            ["tmux"] + args,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        res = run_hidden(
+            [find_mux_binary() or get_mux_bin()] + args,
             text=True,
-            timeout=5,
+            timeout=8,
             check=False,
         )
-        return res.stdout.strip()
+        return (res.stdout or "").strip()
     except Exception:
         return ""
 
@@ -66,7 +157,7 @@ def is_tmux_session_actively_watched(pane_id, idle_threshold=300):
     trong vòng idle_threshold giây (mặc định 5 phút) hay không.
     Lưu ý: tmux send-keys từ Bot KHÔNG làm tăng client_activity, chỉ thao tác bàn phím/chuột thật mới làm tăng.
     """
-    if not has_tmux() or not pane_id or pane_id.startswith("term:"):
+    if not has_tmux() or not is_real_tmux() or not pane_id or pane_id.startswith("term:"):
         return False
     session_name = pane_id.split(":")[0]
     out = run_tmux(["list-clients", "-t", session_name, "-F", "#{client_activity}"])
@@ -118,14 +209,13 @@ def is_screen_locked(pane_id=""):
             if users and isinstance(users[0], dict):
                 return bool(users[0].get("CGSSessionScreenIsLocked", False))
         elif IS_WINDOWS:
-            out = subprocess.check_output(
+            out = run_hidden(
                 ["tasklist", "/FI", "IMAGENAME eq LogonUI.exe"],
-                stdin=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 text=True,
                 timeout=3,
-            )
-            return "LogonUI.exe" in out
+            ).stdout
+            return "LogonUI.exe" in (out or "")
         else:
             user = os.environ.get("USER", "")
             if user:
@@ -161,10 +251,17 @@ def get_session_label(payload):
     2. Nếu server AI khởi động lại mất biến TMUX_PANE, dò trong tmux list-panes theo thư mục cwd và tiến trình AI.
     """
     if is_in_tmux_session():
-        pane = os.environ.get("TMUX_PANE", "")
+        pane = get_pane_id_from_env()
+        # psmux: daemon liệt kê pane bằng ID GỐC ("%N") -> hook cũng phải dùng đúng ID đó,
+        # nếu không hai bên sẽ tạo file state/ack_pending_*.json / waiting_*.flag KHÁC TÊN
+        # ⇒ daemon không nhận được ACK ⇒ cảnh báo "AI chưa nhận được lệnh" giả.
+        if not is_real_tmux():
+            return pane
         out = run_tmux(["display-message", "-t", pane, "-p", "#S:#I.#P"])
         if out:
             return out
+        if pane:
+            return pane
     workspaces = payload.get("workspacePaths") or []
     cwd = os.path.normpath(workspaces[0] if workspaces else (payload.get("cwd") or os.getcwd()))
     if has_tmux():
@@ -321,15 +418,29 @@ def send_telegram(text, pane_id, mode="stop"):
                 payload["parse_mode"] = "Markdown"
             try:
                 req = urllib.request.Request(url, data=urllib.parse.urlencode(payload).encode("utf-8"))
-                urllib.request.urlopen(req, timeout=12)
-                break
+
+                def _send(req=req, payload=payload, url=url):
+                    with urllib.request.urlopen(req, timeout=12) as res:
+                        return res.read()
+
+                ok, _res = with_retry(_send, attempts=3, delay=1.2)
+                if ok:
+                    break
+                raise RuntimeError("gửi Telegram thất bại sau 3 lần thử")
             except Exception as e:
                 if not use_md:
                     # Fallback cuối cùng: bỏ reply_markup nếu có lỗi format button và ghi log
                     try:
                         payload.pop("reply_markup", None)
                         req2 = urllib.request.Request(url, data=urllib.parse.urlencode(payload).encode("utf-8"))
-                        urllib.request.urlopen(req2, timeout=12)
+
+                        def _send2(req2=req2):
+                            with urllib.request.urlopen(req2, timeout=12) as res:
+                                return res.read()
+
+                        ok2, _ = with_retry(_send2, attempts=3, delay=1.2)
+                        if ok2:
+                            break
                     except Exception as e2:
                         try:
                             with open(os.path.join(BASE_DIR, "daemon.err.log"), "a", encoding="utf-8") as ef:
@@ -710,4 +821,19 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Hook chạy bằng pythonw.exe (không có stdout/stderr) -> ghi lỗi ra file để debug được
+        try:
+            import traceback
+            with open(os.path.join(STATE_DIR, "hook.err.log"), "a", encoding="utf-8") as f:
+                f.write(
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {traceback.format_exc()}\n"
+                )
+        except Exception:
+            pass
+        try:
+            print("{}")
+        except Exception:
+            pass
